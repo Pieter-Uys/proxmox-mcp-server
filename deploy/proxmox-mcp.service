@@ -1,0 +1,24 @@
+# Copy to /etc/systemd/system/proxmox-mcp.service, adjust the paths, then:
+#   systemctl daemon-reload && systemctl enable --now proxmox-mcp
+[Unit]
+Description=Proxmox MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxmox-mcp
+WorkingDirectory=/opt/proxmox-mcp
+EnvironmentFile=/opt/proxmox-mcp/.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+# The audit log directory must be writable by the service user.
+# Example: AUDIT_LOG=/var/log/proxmox-mcp/audit.jsonl
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
