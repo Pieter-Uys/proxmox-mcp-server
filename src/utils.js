@@ -10,7 +10,7 @@ export function forLog(value, maxLength = 200) {
 export function pick(table, key, label) {
   if (!Object.hasOwn(table, key)) {
     throw new Error(
-      `Unknown ${label} "${key}". Expected one of: ${Object.keys(table).join(", ")}`,
+      `Unknown ${label} "${forLog(key, 100)}". Expected one of: ${Object.keys(table).join(", ")}`,
     );
   }
   return table[key];

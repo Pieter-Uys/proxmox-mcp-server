@@ -90,7 +90,7 @@ async function runTool(id, toolName, args, auditToolCall) {
     auditToolCall({ outcome: "ok", ms: Date.now() - startedAt });
     return rpcResult(id, result);
   } catch (error) {
-    console.error(`Tool error (${toolName}):`, error);
+    console.error(`Tool error (${forLog(toolName)}):`, error);
     auditToolCall({ outcome: "error", error: error.message, ms: Date.now() - startedAt });
     return rpcError(id, RPC_ERROR_CODES.SERVER_ERROR, error.message);
   }
