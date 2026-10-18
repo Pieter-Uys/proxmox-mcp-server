@@ -36,6 +36,32 @@ test("tools that can require confirmation advertise a boolean confirm argument",
   }
 });
 
+test("every advertised tool declares all four annotation hints as booleans", () => {
+  const hints = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"];
+  for (const { name, annotations } of TOOL_LIST) {
+    assert.deepEqual(Object.keys(annotations ?? {}).sort(), [...hints].sort(), name);
+    for (const hint of hints) {
+      assert.equal(typeof annotations[hint], "boolean", `${name}.${hint}`);
+    }
+  }
+});
+
+test("annotations agree with each tool's policy", () => {
+  for (const { name, annotations } of TOOL_LIST) {
+    const tool = TOOLS[name];
+    if (annotations.readOnlyHint) {
+      assert.equal(annotations.destructiveHint, false, `${name}: read-only cannot be destructive`);
+      assert.equal(tool.confirmationReason, undefined, `${name}: read-only tool cannot require confirmation`);
+      assert.equal(tool.shellCommand, undefined, `${name}: read-only tool cannot run shell commands`);
+    }
+    // Anything that can require confirm: true or run a shell command must not claim to be read-only.
+    if (tool.confirmationReason || tool.shellCommand) {
+      assert.equal(annotations.readOnlyHint, false, `${name}: can change state, so not read-only`);
+      assert.equal(annotations.destructiveHint, true, `${name}: can require confirmation, so advertise it as destructive`);
+    }
+  }
+});
+
 test("findTool does not resolve inherited object properties", () => {
   assert.ok(findTool("host_shell"));
   for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {

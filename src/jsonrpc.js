@@ -17,10 +17,21 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   return METHODS[method](id, params, caller);
 }
 
+// Newest first. Tool annotations were introduced in 2025-03-26.
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
+
+// Use the client's version if we support it, otherwise our newest (the client
+// then decides whether it can talk to us).
+export function negotiateProtocolVersion(requested) {
+  return SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+    ? requested
+    : SUPPORTED_PROTOCOL_VERSIONS[0];
+}
+
 const METHODS = {
-  initialize: (id) =>
+  initialize: (id, params) =>
     rpcResult(id, {
-      protocolVersion: "2024-11-05",
+      protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
       capabilities: { tools: {} },
       serverInfo: { name: "proxmox-mcp", version: "1.1.0" },
     }),
