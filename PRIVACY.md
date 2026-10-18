@@ -19,7 +19,7 @@ Proxmox MCP Server is self-hosted software. It runs on your own infrastructure a
 - Your Authentik instance.
 - `raw.githubusercontent.com`, only when the `run_community_script` tool is used, to fetch the requested community script.
 
-No data is sent to analytics, advertising or other third-party services.
+The server does not use analytics or advertising services. When `run_community_script` fetches a script, `raw.githubusercontent.com` receives the request and its network metadata.
 
 ## Your responsibilities
 

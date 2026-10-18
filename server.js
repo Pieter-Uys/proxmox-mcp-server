@@ -29,7 +29,22 @@ app.use((req, res, next) => {
 app.get("/health", (_, res) => res.json({ status: "ok", tools: TOOL_LIST.length }));
 
 // Health stays outside the limiter so uptime checks are never throttled.
-if (SECURITY.rateLimitPerMinute > 0) app.use(createRateLimiter(SECURITY.rateLimitPerMinute));
+// Scoped to the OAuth and MCP paths so stray requests to unknown paths cannot use up a client's quota.
+if (SECURITY.rateLimitPerMinute > 0) {
+  const rateLimiter = createRateLimiter(SECURITY.rateLimitPerMinute);
+  app.use(
+    [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-authorization-server",
+      "/authorize",
+      "/token",
+      "/mcp",
+      "/sse",
+      "/messages",
+    ],
+    rateLimiter,
+  );
+}
 
 app.use(oauthRouter);
 app.use(mcpRouter);
