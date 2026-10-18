@@ -71,20 +71,47 @@ node --env-file=.env server.js
 
 ### As a systemd service
 
-See [`deploy/proxmox-mcp.service`](../deploy/proxmox-mcp.service). It expects the code in `/opt/proxmox-mcp` with the `.env` next to it.
+See [`deploy/proxmox-mcp.service`](../deploy/proxmox-mcp.service). It expects the code in `/opt/proxmox-mcp` with the `.env` next to it, and runs as a dedicated `proxmox-mcp` user. Set up in this order:
+
+```
+# 1. Service account with no login shell
+sudo useradd --system --home-dir /opt/proxmox-mcp --shell /usr/sbin/nologin proxmox-mcp
+
+# 2. Code, .env and SSH key owned by root, readable by the service group only
+sudo chown -R root:proxmox-mcp /opt/proxmox-mcp
+sudo chmod 640 /opt/proxmox-mcp/.env /opt/proxmox-mcp/mcp_key
+
+# 3. Audit log: set this in .env, systemd creates the directory for the service user
+#    AUDIT_LOG=/var/log/proxmox-mcp/audit.jsonl
+
+# 4. Install and start
+sudo cp deploy/proxmox-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now proxmox-mcp
+```
+
+The unit sets `LogsDirectory=proxmox-mcp`, so `/var/log/proxmox-mcp` is created and owned by the service user on start. Keep `AUDIT_LOG` pointing there, because a relative path like the `./logs/audit.jsonl` in `.env.example` would not be writable.
 
 ### With Docker
 
 ```
 docker build -t proxmox-mcp .
+
+# The container runs as the unprivileged "node" user (UID 1000). Give it its own
+# copy of the SSH key, readable by that user only. Never make the key world-readable.
+sudo install -d -m 700 -o 1000 -g 1000 /etc/proxmox-mcp
+sudo install -m 400 -o 1000 -g 1000 ./mcp_key /etc/proxmox-mcp/mcp_key
+
 docker run -d --name proxmox-mcp --restart unless-stopped \
-  --env-file .env -p 3000:3000 \
+  --env-file .env -p 127.0.0.1:3000:3000 \
   -v proxmox-mcp-data:/data \
-  -v /path/to/mcp_key:/keys/mcp_key:ro \
+  -v /etc/proxmox-mcp/mcp_key:/keys/mcp_key:ro \
   proxmox-mcp
 ```
 
-Use `PROXMOX_SSH_KEY=/keys/mcp_key` and, if needed, `PROXMOX_CA_CERT=/keys/pve-root-ca.pem` in the `.env`, and mount those files the same way. The audit log goes to `/data/audit.jsonl` by default. Docker's `--env-file` does not strip quotes, so write values without quotes.
+Set `PROXMOX_SSH_KEY=/keys/mcp_key` and, if needed, `PROXMOX_CA_CERT=/keys/pve-root-ca.pem` in the `.env`, and mount that file the same way with the same ownership. The audit log goes to `/data/audit.jsonl` by default. Docker's `--env-file` does not strip quotes, so write values without quotes.
+
+**Keep port 3000 off the network.** The server speaks plain HTTP and expects HTTPS to be terminated in front of it. `127.0.0.1:3000:3000` publishes the port to the same machine only, which is right when `cloudflared` runs on the same host. If your tunnel or reverse proxy runs elsewhere, do not publish on all interfaces. Either put both containers on a shared Docker network and drop `-p` entirely (point the tunnel at `http://proxmox-mcp:3000`), or bind to a private interface address and restrict it with a firewall to the proxy's address.
 
 Check it is up:
 
