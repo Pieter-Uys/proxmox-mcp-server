@@ -1,0 +1,26 @@
+# Copy to /etc/systemd/system/proxmox-mcp.service and adjust the paths.
+# Create the service account and set file ownership first: see docs/SETUP.md.
+# Set AUDIT_LOG=/var/log/proxmox-mcp/audit.jsonl in the .env file; the
+# LogsDirectory line below creates that directory owned by the service user.
+# Then: systemctl daemon-reload && systemctl enable --now proxmox-mcp
+[Unit]
+Description=Proxmox MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxmox-mcp
+WorkingDirectory=/opt/proxmox-mcp
+EnvironmentFile=/opt/proxmox-mcp/.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+LogsDirectory=proxmox-mcp
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

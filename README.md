@@ -1,6 +1,8 @@
 # Proxmox MCP Server
 
-Remote MCP server that lets an AI assistant (Claude) manage a Proxmox VE host through tool calling. Node.js + Express, JSON-RPC over HTTP, OAuth via Authentik, exposed through a Cloudflare Tunnel.
+Remote MCP server that lets an AI assistant (Claude) manage a Proxmox VE host through tool calling. Node.js + Express, JSON-RPC over HTTP, OAuth login through [Authentik](https://goauthentik.io). It is designed to be exposed through a Cloudflare Tunnel, but any public HTTPS address works.
+
+New here? Follow the [step-by-step setup guide](docs/SETUP.md): Proxmox API token, SSH key, Authentik application, tunnel, and running it with Node, systemd or Docker.
 
 ## Tools (13)
 `get_status`, `proxmox_api`, `manage_vm`, `create_lxc`, `backup_vm`, `set_boot_order`, `firewall_rule`, `network_config`, `storage_config`, `host_shell`, `lxc_shell`, `vm_ssh`, `run_community_script`
