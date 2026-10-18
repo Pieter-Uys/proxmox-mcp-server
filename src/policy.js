@@ -36,7 +36,7 @@ export function getPolicyBlockReason(tool, args) {
 // interpret: separators (; & | newline), redirects, quotes, variables, globs.
 // Checking only the first word would let through `date -s ...`,
 // `find / -delete`, `ip link set eth0 down` and similar.
-const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,.\/-]+$/;
+const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 export function isReadonlyCommand(command) {
   const words = command.trim().split(/[ \t]+/);

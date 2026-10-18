@@ -45,9 +45,9 @@ export function validateArgs(inputSchema, args) {
 }
 
 // Checks a tool's requiredWhen rules, e.g. "pos is required when action is delete".
-export function checkRequiredWhen(rules = [], args) {
+export function checkRequiredWhen(rules, args) {
   const problems = [];
-  for (const { field, values, required } of rules) {
+  for (const { field, values, required } of rules ?? []) {
     if (!values.includes(args[field])) continue;
     for (const name of required) {
       if (args[name] === undefined) problems.push(`${name} is required when ${field} is ${args[field]}`);

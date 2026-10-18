@@ -2,8 +2,8 @@
 // these settings, so provide throwaway values before any src/ module loads.
 // They are assigned unconditionally so a test run can never pick up real
 // infrastructure settings from the developer's shell.
-import os from "os";
-import path from "path";
+import os from "node:os";
+import path from "node:path";
 
 Object.assign(process.env, {
   PROXMOX_HOST: "pve.test",

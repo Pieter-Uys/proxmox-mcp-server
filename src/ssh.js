@@ -79,8 +79,10 @@ function runCommand(connection, command) {
 }
 
 // Wraps a value in single quotes so the shell passes it through literally.
+const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
 export function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+  const escaped = String(value).replaceAll("'", ESCAPED_SINGLE_QUOTE);
+  return `'${escaped}'`;
 }
 
 export function formatCommandResult(result) {

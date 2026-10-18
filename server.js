@@ -8,6 +8,7 @@ import { fallbackErrorHandler } from "./src/routes/middleware.js";
 
 // ─── Express ─────────────────────────────────────────────────────────────────
 const app = express();
+app.disable("x-powered-by");
 
 // CORS
 app.use((req, res, next) => {

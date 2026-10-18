@@ -1,4 +1,4 @@
-import fs from "fs";
+import fs from "node:fs";
 
 // ─── Required settings ─────────────────────────────────────────────────────
 // Settings that point at real infrastructure have no defaults. If one is
@@ -34,14 +34,14 @@ export const CONFIG = {
   },
   ssh: {
     host: process.env.PROXMOX_SSH_HOST,
-    port: parseInt(process.env.PROXMOX_SSH_PORT || "22"),
+    port: Number.parseInt(process.env.PROXMOX_SSH_PORT || "22", 10),
     username: process.env.PROXMOX_SSH_USER || "root",
     privateKey: process.env.PROXMOX_SSH_KEY
       ? fs.readFileSync(process.env.PROXMOX_SSH_KEY)
       : undefined,
   },
   server: {
-    port: parseInt(process.env.MCP_PORT || "3000"),
+    port: Number.parseInt(process.env.MCP_PORT || "3000", 10),
     baseUrl: process.env.MCP_BASE_URL,
   },
   authentik: {

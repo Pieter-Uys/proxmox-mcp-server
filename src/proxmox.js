@@ -1,4 +1,4 @@
-import https from "https";
+import https from "node:https";
 import { CONFIG } from "./config.js";
 
 // ─── Proxmox API ────────────────────────────────────────────────────────────
@@ -12,8 +12,32 @@ const proxmoxAgent = new https.Agent({
   ...(CONFIG.proxmox.caCert && { ca: CONFIG.proxmox.caCert }),
 });
 
+// Throws unless `apiPath` stays under /api2/json once the URL is parsed. A path
+// like /../x, or one with an encoded slash or dot segment, would otherwise
+// reach other endpoints on the Proxmox host. Query strings are allowed.
+export function assertSafeApiPath(apiPath) {
+  const reject = (why) => {
+    throw new Error(`Invalid Proxmox API path: ${why}`);
+  };
+  if (typeof apiPath !== "string" || !apiPath.startsWith("/") || apiPath.startsWith("//"))
+    reject("it must start with a single /");
+  if (/[\s\\#]|\p{Cc}/u.test(apiPath)) reject("it contains whitespace, a backslash, # or a control character");
+  const [pathname] = apiPath.split("?");
+  for (const segment of pathname.split("/")) {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return reject("it contains a malformed % escape");
+    }
+    if (decoded === "." || decoded === "..") reject("it contains a dot segment");
+    if (/[/\\]/.test(decoded)) reject("it contains an encoded slash or backslash");
+  }
+}
+
 // Calls the Proxmox REST API and returns the response's `data`.
 export async function proxmoxRequest(method, apiPath, body = null) {
+  assertSafeApiPath(apiPath);
   const response = await sendRequest(buildRequest(method, apiPath, body));
   if (response.status < 200 || response.status >= 300)
     throw new Error(`Proxmox ${response.status}: ${response.text}`);
@@ -22,8 +46,13 @@ export async function proxmoxRequest(method, apiPath, body = null) {
 
 function buildRequest(method, apiPath, body) {
   const payload = body ? JSON.stringify(body) : null;
+  const origin = `https://${CONFIG.proxmox.host}:${CONFIG.proxmox.port}`;
+  const url = new URL(`/api2/json${apiPath}`, origin);
+  // Defense in depth: the parsed URL must still be on the configured host and under /api2/json/.
+  if (url.origin !== new URL(origin).origin || !url.pathname.startsWith("/api2/json/"))
+    throw new Error("Invalid Proxmox API path: it resolves outside /api2/json");
   return {
-    url: `https://${CONFIG.proxmox.host}:${CONFIG.proxmox.port}/api2/json${apiPath}`,
+    url,
     options: {
       method,
       agent: proxmoxAgent,

@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import crypto from "node:crypto";
 import { CONFIG, SECURITY } from "./config.js";
 import { audit } from "./audit.js";
 import { AUTHENTIK, OAUTH_SCOPES, authentikFetch } from "./authentik.js";
@@ -82,9 +82,16 @@ async function verifyBearerToken(req) {
   }
 }
 
-function readBearerToken(req) {
-  const match = (req.headers.authorization || "").match(/^Bearer\s+(.+)$/i);
-  return match ? match[1] : null;
+// Returns the token from "Authorization: Bearer <token>", or null. Plain string
+// handling on purpose: a regex like /^Bearer\s+(.+)$/ can backtrack heavily on a
+// long run of spaces, and this runs on every request before the caller is trusted.
+export function readBearerToken(req) {
+  const header = req.headers.authorization || "";
+  if (header.slice(0, 6).toLowerCase() !== "bearer") return null;
+  const afterScheme = header.slice(6);
+  const token = afterScheme.trimStart();
+  const hasSeparator = token.length < afterScheme.length;
+  return hasSeparator && token ? token : null;
 }
 
 const looksLikeJwt = (token) => token.split(".").length === 3;
@@ -194,7 +201,7 @@ function checkClaims(claims) {
 }
 
 // ─── Authentik signing keys (JWKS) ──────────────────────────────────────────
-/** @type {{ keysById: Map<string, import("crypto").KeyObject>, fetchedAt: number }} */
+/** @type {{ keysById: Map<string, import("node:crypto").KeyObject>, fetchedAt: number }} */
 const jwks = { keysById: new Map(), fetchedAt: 0 };
 
 async function getSigningKey(keyId) {

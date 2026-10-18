@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TOOLS, TOOL_LIST, findTool } from "../src/tools.js";
+import { TOOLS, TOOL_LIST, findTool, startupSetting } from "../src/tools.js";
 import { getPolicyBlockReason } from "../src/policy.js";
 import { validateArgs, checkRequiredWhen } from "../src/validate.js";
 
@@ -152,4 +152,12 @@ test("requiredWhen: action-specific arguments are enforced", () => {
   assert.ok(problems("firewall_rule", { action: "list", level: "vm" }).some((p) => /vmid/.test(p)));
   assert.ok(problems("network_config", { action: "update" }).some((p) => /iface/.test(p)));
   assert.ok(problems("storage_config", { action: "zfs_create" }).some((p) => /zfsCommand/.test(p)));
+});
+
+test("startupSetting builds the Proxmox startup value", () => {
+  assert.equal(startupSetting({ order: 2 }), "order=2");
+  assert.equal(startupSetting({ order: 0, upDelay: 30 }), "order=0,up=30");
+  assert.equal(startupSetting({ order: 1, downDelay: 10 }), "order=1,down=10");
+  assert.equal(startupSetting({ order: 3, upDelay: 30, downDelay: 10 }), "order=3,up=30,down=10");
+  assert.equal(startupSetting({ order: 1, upDelay: 0, downDelay: 0 }), "order=1");
 });
