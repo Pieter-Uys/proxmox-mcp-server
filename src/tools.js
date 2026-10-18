@@ -49,12 +49,21 @@ function requireWhen(field, values, required) {
 
 // Each tool keeps its schema, policy and implementation together:
 //   description, inputSchema  advertised to clients via tools/list
+//   annotations               the four MCP hints, always explicit booleans, advertised
+//                             via tools/list so hosts can warn before risky calls
 //   shellCommand(args)        shell command this call runs, or null (SHELL_MODE applies)
 //   requiredWhen              arguments that only some actions need (requireWhen)
 //   confirmationReason(args)  why this call needs confirm: true, or null
 //   run(args, node)           performs the call; returns text or JSON data
 export const TOOLS = {
   proxmox_api: {
+    // Any REST method, including DELETE.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Make any Proxmox REST API call. Anything other than GET requires confirm: true.",
     inputSchema: {
@@ -72,6 +81,13 @@ export const TOOLS = {
   },
 
   host_shell: {
+    // Arbitrary commands on the host, which can also reach the network.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     description:
       "Run a shell command on the Proxmox host via SSH. Commands that aren't plain read-only commands require confirm: true.",
     inputSchema: {
@@ -85,6 +101,13 @@ export const TOOLS = {
   },
 
   lxc_shell: {
+    // Arbitrary commands in a container, which can also reach the network.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     description:
       "Run a command inside an LXC container via pct exec. Commands that aren't plain read-only commands require confirm: true.",
     inputSchema: {
@@ -101,6 +124,13 @@ export const TOOLS = {
   },
 
   vm_ssh: {
+    // Arbitrary commands on any IP the caller names.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     description:
       "SSH into a VM by IP and run a command. Commands that aren't plain read-only commands require confirm: true.",
     inputSchema: {
@@ -126,6 +156,13 @@ export const TOOLS = {
   },
 
   run_community_script: {
+    // Downloads remote code and runs it as root.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     description:
       "Run a community-scripts.org LXC script on Proxmox. Always requires confirm: true (downloads and runs remote code as root).",
     inputSchema: {
@@ -146,6 +183,13 @@ export const TOOLS = {
   },
 
   get_status: {
+    // GET requests only.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     description: "Get Proxmox cluster/node/VM/LXC/storage status.",
     inputSchema: {
       type: "object",
@@ -172,6 +216,13 @@ export const TOOLS = {
   },
 
   create_lxc: {
+    // Additive: creates a container, fails if the vmid exists.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description: "Create a new LXC container.",
     inputSchema: {
       type: "object",
@@ -212,6 +263,13 @@ export const TOOLS = {
   },
 
   manage_vm: {
+    // Includes stop and delete.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Start, stop, restart, or delete a VM or LXC. stop and delete require confirm: true.",
     inputSchema: {
@@ -240,6 +298,13 @@ export const TOOLS = {
   },
 
   firewall_rule: {
+    // Includes deleting rules; add is not idempotent.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Manage Proxmox firewall rules. delete requires confirm: true.",
     inputSchema: {
@@ -273,6 +338,13 @@ export const TOOLS = {
   },
 
   network_config: {
+    // Includes deleting interfaces and applying config.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Manage Proxmox network interfaces and VLANs. delete and apply require confirm: true.",
     inputSchema: {
@@ -315,6 +387,13 @@ export const TOOLS = {
   },
 
   storage_config: {
+    // Includes deleting storage and creating ZFS datasets.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Manage Proxmox storage (NFS, SMB, ZFS, LVM). delete and zfs_create require confirm: true.",
     inputSchema: {
@@ -359,6 +438,13 @@ export const TOOLS = {
   },
 
   set_boot_order: {
+    // Overwrites the startup setting; same input gives the same state.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     description: "Set VM/LXC startup order.",
     inputSchema: {
       type: "object",
@@ -383,6 +469,13 @@ export const TOOLS = {
   },
 
   backup_vm: {
+    // Adds a backup each call; mode stop briefly shuts the guest down.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Create a backup of a VM or LXC. mode stop requires confirm: true.",
     inputSchema: {
@@ -418,6 +511,7 @@ const CONFIRM_PROPERTY = {
 export const TOOL_LIST = Object.entries(TOOLS).map(([name, tool]) => ({
   name,
   description: tool.description,
+  annotations: tool.annotations,
   inputSchema: tool.confirmationReason
     ? {
         ...tool.inputSchema,
