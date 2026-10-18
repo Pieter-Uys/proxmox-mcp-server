@@ -438,10 +438,10 @@ export const TOOLS = {
   },
 
   set_boot_order: {
-    // Overwrites the startup setting; same input gives the same state.
+    // Overwrites the startup and onboot settings; same input gives the same state.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -469,10 +469,10 @@ export const TOOLS = {
   },
 
   backup_vm: {
-    // Adds a backup each call; mode stop briefly shuts the guest down.
+    // Adds a backup each call; mode stop shuts the guest down, and hints are tool-wide.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
     },

@@ -5,7 +5,7 @@ Remote MCP server that lets an AI assistant (Claude) manage a Proxmox VE host th
 ## Tools (13)
 `get_status`, `proxmox_api`, `manage_vm`, `create_lxc`, `backup_vm`, `set_boot_order`, `firewall_rule`, `network_config`, `storage_config`, `host_shell`, `lxc_shell`, `vm_ssh`, `run_community_script`
 
-Every tool declares all four MCP annotation hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) in `tools/list`, so clients can warn before risky calls. Only `get_status` is read-only. The shell tools, `run_community_script` and `vm_ssh` are marked open-world because they can reach beyond the Proxmox host. A test keeps the hints consistent with each tool's confirmation and shell policy.
+Every tool declares all four MCP annotation hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) in `tools/list`, so clients can warn before risky calls. Only `get_status` is read-only; everything that can delete, stop or overwrite something is marked destructive. `initialize` negotiates the protocol version (`2025-03-26` or `2024-11-05`, using the client's if supported, otherwise `2025-03-26`). The shell tools, `run_community_script` and `vm_ssh` are marked open-world because they can reach beyond the Proxmox host. A test keeps the hints consistent with each tool's confirmation and shell policy.
 
 ## Security model
 - **Authentication:** every `/mcp`, `/sse` and `/messages` request must carry a bearer token. JWTs are verified locally against Authentik's signing keys (RS256, issuer, expiry); opaque tokens are checked via Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash. `AUTH_MODE=enforce|log|off`.

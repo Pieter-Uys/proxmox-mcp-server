@@ -57,6 +57,7 @@ test("annotations agree with each tool's policy", () => {
     // Anything that can require confirm: true or run a shell command must not claim to be read-only.
     if (tool.confirmationReason || tool.shellCommand) {
       assert.equal(annotations.readOnlyHint, false, `${name}: can change state, so not read-only`);
+      assert.equal(annotations.destructiveHint, true, `${name}: can require confirmation, so advertise it as destructive`);
     }
   }
 });
