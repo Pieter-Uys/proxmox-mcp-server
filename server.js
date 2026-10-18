@@ -4,11 +4,13 @@ import { CONFIG, SECURITY } from "./src/config.js";
 import { TOOL_LIST } from "./src/tools.js";
 import { oauthRouter } from "./src/routes/oauth.js";
 import { mcpRouter } from "./src/routes/mcp.js";
+import { createRateLimiter } from "./src/rateLimit.js";
 import { fallbackErrorHandler } from "./src/routes/middleware.js";
 
 // ─── Express ─────────────────────────────────────────────────────────────────
 const app = express();
 app.disable("x-powered-by");
+if (SECURITY.trustProxyHops > 0) app.set("trust proxy", SECURITY.trustProxyHops);
 
 // CORS
 app.use((req, res, next) => {
@@ -26,6 +28,24 @@ app.use((req, res, next) => {
 // Health
 app.get("/health", (_, res) => res.json({ status: "ok", tools: TOOL_LIST.length }));
 
+// Health stays outside the limiter so uptime checks are never throttled.
+// Scoped to the OAuth and MCP paths so stray requests to unknown paths cannot use up a client's quota.
+if (SECURITY.rateLimitPerMinute > 0) {
+  const rateLimiter = createRateLimiter(SECURITY.rateLimitPerMinute);
+  app.use(
+    [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-authorization-server",
+      "/authorize",
+      "/token",
+      "/mcp",
+      "/sse",
+      "/messages",
+    ],
+    rateLimiter,
+  );
+}
+
 app.use(oauthRouter);
 app.use(mcpRouter);
 
@@ -39,6 +59,6 @@ app.listen(CONFIG.server.port, () => {
   console.log(`Tools: ${TOOL_LIST.length}`);
   console.log(`Authentik: ${CONFIG.authentik.url}`);
   console.log(
-    `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} AUDIT_LOG=${SECURITY.auditLog}`,
+    `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} AUDIT_LOG=${SECURITY.auditLog} RATE_LIMIT_PER_MINUTE=${SECURITY.rateLimitPerMinute}`,
   );
 });
