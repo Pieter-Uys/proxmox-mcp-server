@@ -46,8 +46,13 @@ export async function proxmoxRequest(method, apiPath, body = null) {
 
 function buildRequest(method, apiPath, body) {
   const payload = body ? JSON.stringify(body) : null;
+  const origin = `https://${CONFIG.proxmox.host}:${CONFIG.proxmox.port}`;
+  const url = new URL(`/api2/json${apiPath}`, origin);
+  // Defense in depth: the parsed URL must still be on the configured host and under /api2/json/.
+  if (url.origin !== new URL(origin).origin || !url.pathname.startsWith("/api2/json/"))
+    throw new Error("Invalid Proxmox API path: it resolves outside /api2/json");
   return {
-    url: `https://${CONFIG.proxmox.host}:${CONFIG.proxmox.port}/api2/json${apiPath}`,
+    url,
     options: {
       method,
       agent: proxmoxAgent,
