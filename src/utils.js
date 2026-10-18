@@ -1,3 +1,11 @@
+// Makes a value safe to write on one log line: strings pass through, anything
+// else is JSON-encoded, and line breaks and other control characters become
+// spaces so request data can't forge extra log entries. Cut to `maxLength`.
+export function forLog(value, maxLength = 200) {
+  const text = typeof value === "string" ? value : String(JSON.stringify(value));
+  return text.replaceAll(/[\p{Cc}\u2028\u2029]/gu, " ").slice(0, maxLength);
+}
+
 // Looks up `key` in `table`, throwing a helpful error for unknown values.
 export function pick(table, key, label) {
   if (!Object.hasOwn(table, key)) {

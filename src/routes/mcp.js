@@ -1,9 +1,10 @@
-import crypto from "crypto";
+import crypto from "node:crypto";
 import express from "express";
 import { requireAuth } from "../auth.js";
 import { handleJsonRpc } from "../jsonrpc.js";
 import { SSE_KEEPALIVE_INTERVAL_MS } from "../constants.js";
 import { parseBody, asyncRoute, jsonRpcErrorHandler } from "./middleware.js";
+import { forLog } from "../utils.js";
 
 // MCP transports: JSON-RPC over POST /mcp, plus SSE streams for clients that open one.
 export const mcpRouter = express.Router();
@@ -15,14 +16,14 @@ mcpRouter.post(
   parseBody,
   authenticate,
   asyncRoute(async (req, res) => {
-    console.log("MCP POST:", JSON.stringify(req.body).slice(0, 60));
+    console.log("MCP POST:", forLog(req.body, 60));
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Cache-Control", "no-store");
     const response = Array.isArray(req.body)
       ? await handleBatch(req.body, req.ctx)
       : await handleJsonRpc(req.body, req.ctx);
     if (response === null) return res.status(202).end(); // a notification
-    console.log("MCP response:", JSON.stringify(response).slice(0, 80));
+    console.log("MCP response:", forLog(response, 80));
     res.json(response);
   }),
 );
@@ -48,7 +49,7 @@ mcpRouter.post(
   parseBody,
   authenticate,
   asyncRoute(async (req, res) => {
-    console.log("SSE message:", JSON.stringify(req.body).slice(0, 60));
+    console.log("SSE message:", forLog(req.body, 60));
     const response = await handleJsonRpc(req.body, req.ctx);
     res.json(response || {});
   }),

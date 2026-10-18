@@ -1,5 +1,6 @@
 import express from "express";
 import { rpcError, RPC_ERROR_CODES } from "../rpc.js";
+import { forLog } from "../utils.js";
 
 // Request body parsing, applied per route so that a malformed body is reported
 // by the error handler of the router that received it.
@@ -20,8 +21,8 @@ function createErrorHandler(formatBody) {
     if (res.headersSent) return next(error);
     const status = error.status || error.statusCode || 500;
     const isClientError = status >= 400 && status < 500;
-    if (isClientError) console.warn(`Rejected request to ${req.path}: ${error.message}`);
-    else console.error(`Unhandled error on ${req.path}:`, error);
+    if (isClientError) console.warn(`Rejected request to ${forLog(req.path)}: ${forLog(error.message)}`);
+    else console.error(`Unhandled error on ${forLog(req.path)}:`, error);
     res.status(status).json(formatBody(error, isClientError));
   };
 }

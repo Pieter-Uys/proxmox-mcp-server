@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "fs";
+import fs from "node:fs";
 import { redactSecrets, audit } from "../src/audit.js";
 import { SECURITY } from "../src/config.js";
 

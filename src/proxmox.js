@@ -1,4 +1,4 @@
-import https from "https";
+import https from "node:https";
 import { CONFIG } from "./config.js";
 
 // ─── Proxmox API ────────────────────────────────────────────────────────────

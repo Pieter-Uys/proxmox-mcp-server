@@ -3,6 +3,7 @@ import { getPolicyBlockReason } from "./policy.js";
 import { rpcResult, rpcError, RPC_ERROR_CODES } from "./rpc.js";
 import { TOOL_LIST, callTool, findTool } from "./tools.js";
 import { validateArgs, checkRequiredWhen } from "./validate.js";
+import { forLog } from "./utils.js";
 
 // ─── MCP JSON-RPC handler ───────────────────────────────────────────────────
 // `caller` is req.ctx from requireAuth: { ip, user }. Returns the response to
@@ -11,7 +12,7 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   if (!rpcRequest || typeof rpcRequest !== "object" || Array.isArray(rpcRequest))
     return rpcError(null, RPC_ERROR_CODES.INVALID_REQUEST, "Invalid request");
   const { method, params, id } = rpcRequest;
-  console.log("RPC:", method, id);
+  console.log("RPC:", forLog(method), forLog(id));
   if (!Object.hasOwn(METHODS, method))
     return rpcError(id, RPC_ERROR_CODES.METHOD_NOT_FOUND, "Method not found: " + method);
   return METHODS[method](id, params, caller);

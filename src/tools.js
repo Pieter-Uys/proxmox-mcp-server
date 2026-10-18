@@ -41,6 +41,13 @@ function firewallRulesPath(args, node) {
   return `/nodes/${node}/${GUEST_PATH_TYPE[args.level]}/${args.vmid}/firewall/rules`;
 }
 
+// The Proxmox `startup` value, e.g. "order=2,up=30,down=10".
+export function startupSetting({ order, upDelay, downDelay }) {
+  return [`order=${order}`, upDelay && `up=${upDelay}`, downDelay && `down=${downDelay}`]
+    .filter(Boolean)
+    .join(",");
+}
+
 // Declares arguments that only some calls need, e.g. `pos` for a delete.
 // Checked with the schema before the tool runs (see validate.js).
 function requireWhen(field, values, required) {
@@ -459,7 +466,7 @@ export const TOOLS = {
       required: ["vmid", "order"],
     },
     run: (args, node) => {
-      const startup = `order=${args.order}${args.upDelay ? `,up=${args.upDelay}` : ""}${args.downDelay ? `,down=${args.downDelay}` : ""}`;
+      const startup = startupSetting(args);
       return proxmoxRequest(
         "PUT",
         `/nodes/${node}/${args.type || "lxc"}/${args.vmid}/config`,
