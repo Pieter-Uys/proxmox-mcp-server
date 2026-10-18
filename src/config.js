@@ -57,6 +57,11 @@ export const SECURITY = {
   authMode: (process.env.AUTH_MODE || "enforce").toLowerCase(),
   shellMode: (process.env.SHELL_MODE || "full").toLowerCase(),
   auditLog: process.env.AUDIT_LOG || "/var/log/proxmox-mcp/audit.jsonl",
+  // Requests per client IP per minute across the OAuth and MCP routes. 0 disables.
+  rateLimitPerMinute: Number.parseInt(process.env.RATE_LIMIT_PER_MINUTE || "120", 10),
+  // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
+  // so the limiter sees real client IPs. 0 means no proxy.
+  trustProxyHops: Number.parseInt(process.env.TRUST_PROXY_HOPS || "0", 10),
 };
 
 // A typo here must not silently change the security posture (an unknown
