@@ -18,6 +18,17 @@ if (missingSettings.length) {
   process.exit(1);
 }
 
+// Reads a non-negative integer setting, refusing to start on anything else so a
+// typo can't silently turn a protection off.
+function parseNonNegativeInt(name, fallback) {
+  const raw = process.env[name] || fallback;
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+    console.error(`${name} must be a non-negative integer, got "${raw}".`);
+    process.exit(1);
+  }
+  return Number(raw);
+}
+
 // ─── Config ────────────────────────────────────────────────────────────────
 export const CONFIG = {
   proxmox: {
@@ -57,6 +68,11 @@ export const SECURITY = {
   authMode: (process.env.AUTH_MODE || "enforce").toLowerCase(),
   shellMode: (process.env.SHELL_MODE || "full").toLowerCase(),
   auditLog: process.env.AUDIT_LOG || "/var/log/proxmox-mcp/audit.jsonl",
+  // Requests per client IP per minute across the OAuth and MCP routes. 0 disables.
+  rateLimitPerMinute: parseNonNegativeInt("RATE_LIMIT_PER_MINUTE", "120"),
+  // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
+  // so the limiter sees real client IPs. 0 means no proxy.
+  trustProxyHops: parseNonNegativeInt("TRUST_PROXY_HOPS", "0"),
 };
 
 // A typo here must not silently change the security posture (an unknown
