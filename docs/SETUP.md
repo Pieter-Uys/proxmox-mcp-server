@@ -97,19 +97,32 @@ The unit sets `LogsDirectory=proxmox-mcp`, so `/var/log/proxmox-mcp` is created 
 ```
 docker build -t proxmox-mcp .
 
-# The container runs as the unprivileged "node" user (UID 1000). Give it its own
-# copy of the SSH key, readable by that user only. Never make the key world-readable.
-sudo install -d -m 700 -o 1000 -g 1000 /etc/proxmox-mcp
-sudo install -m 400 -o 1000 -g 1000 ./mcp_key /etc/proxmox-mcp/mcp_key
+# Use a dedicated host account for the container, so no login user ever owns the SSH key.
+# Skip this line if you already created proxmox-mcp for systemd above.
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin proxmox-mcp
+UID_MCP=$(id -u proxmox-mcp); GID_MCP=$(id -g proxmox-mcp)
+
+# Key and audit-log directory owned by that account only
+sudo install -d -m 700 -o $UID_MCP -g $GID_MCP /etc/proxmox-mcp /var/lib/proxmox-mcp
+sudo install -m 400 -o $UID_MCP -g $GID_MCP ./mcp_key /etc/proxmox-mcp/mcp_key
 
 docker run -d --name proxmox-mcp --restart unless-stopped \
+  --user $UID_MCP:$GID_MCP \
   --env-file .env -p 127.0.0.1:3000:3000 \
-  -v proxmox-mcp-data:/data \
+  -v /var/lib/proxmox-mcp:/data \
   -v /etc/proxmox-mcp/mcp_key:/keys/mcp_key:ro \
   proxmox-mcp
 ```
 
-Set `PROXMOX_SSH_KEY=/keys/mcp_key` and, if needed, `PROXMOX_CA_CERT=/keys/pve-root-ca.pem` in the `.env`, and mount that file the same way with the same ownership. The audit log goes to `/data/audit.jsonl` by default. Docker's `--env-file` does not strip quotes, so write values without quotes.
+In the `.env` you pass to Docker, set these paths, because the relative `AUDIT_LOG=./logs/audit.jsonl` from `.env.example` would not be writable inside the container:
+
+```
+AUDIT_LOG=/data/audit.jsonl
+PROXMOX_SSH_KEY=/keys/mcp_key
+# PROXMOX_CA_CERT=/keys/pve-root-ca.pem   (mount that file the same way, same ownership)
+```
+
+The container runs as the dedicated `proxmox-mcp` account, which is not a login user, so the private key is readable only by that account (and root). Docker's `--env-file` does not strip quotes, so write values without quotes.
 
 **Keep port 3000 off the network.** The server speaks plain HTTP and expects HTTPS to be terminated in front of it. `127.0.0.1:3000:3000` publishes the port to the same machine only, which is right when `cloudflared` runs on the same host. If your tunnel or reverse proxy runs elsewhere, do not publish on all interfaces. Either put both containers on a shared Docker network and drop `-p` entirely (point the tunnel at `http://proxmox-mcp:3000`), or bind to a private interface address and restrict it with a firewall to the proxy's address.
 
