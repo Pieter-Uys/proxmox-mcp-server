@@ -188,3 +188,86 @@ test("clientIp ignores cf-connecting-ip unless the server trusts a proxy", async
     assert.equal(clientIp({ ip: "203.0.113.7", headers: {} }), "203.0.113.7");
   });
 });
+
+// ─── JWT verification ───────────────────────────────────────────────────────
+const reasonFor = async (token) => (await verify(token)).reason;
+const otherKeys = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+test("jwt: a valid RS256 token is accepted", async () => {
+  assert.deepEqual(await verify(signJwt(validClaims({ scope: "openid" }))), {
+    ok: true,
+    user: "alice",
+    scope: "openid",
+    cached: false,
+  });
+});
+
+test("jwt: a signature from another key is rejected", async () => {
+  assert.equal(await reasonFor(signJwt(validClaims(), { key: otherKeys.privateKey })), "bad signature");
+});
+
+test("jwt: tampered claims break the signature", async () => {
+  const [header, , signature] = signJwt(validClaims()).split(".");
+  const forged = base64UrlJson(validClaims({ preferred_username: "root" }));
+  assert.equal(await reasonFor(`${header}.${forged}.${signature}`), "bad signature");
+});
+
+test("jwt: an unknown kid is rejected without fetching keys", async () => {
+  assert.equal(await reasonFor(signJwt(validClaims(), { header: { kid: "nope" } })), "unknown signing key");
+});
+
+test("jwt: algorithms other than RS256 are rejected, including none and HS256", async () => {
+  const claims = base64UrlJson(validClaims());
+  const none = `${base64UrlJson({ alg: "none", kid: KEY_ID })}.${claims}.`;
+  assert.equal(await reasonFor(none), "unsupported alg none");
+  // HS256 keyed with the public key: the classic algorithm-confusion forgery.
+  const hsHeader = base64UrlJson({ alg: "HS256", kid: KEY_ID });
+  const hmacKey = publicKey.export({ type: "spki", format: "pem" });
+  const hsSig = crypto.createHmac("sha256", hmacKey).update(`${hsHeader}.${claims}`).digest("base64url");
+  assert.equal(await reasonFor(`${hsHeader}.${claims}.${hsSig}`), "unsupported alg HS256");
+  for (const alg of ["RS512", "ES256", "PS256", "rs256"]) {
+    assert.equal(await reasonFor(signJwt(validClaims(), { header: { alg } })), `unsupported alg ${alg}`);
+  }
+});
+
+test("jwt: wrong issuer is rejected", async () => {
+  assert.equal(await reasonFor(signJwt(validClaims({ iss: "https://evil.test/application/o/proxmox-mcp/" }))), "wrong issuer");
+  assert.equal(await reasonFor(signJwt(validClaims({ iss: undefined }))), "wrong issuer");
+});
+
+test("jwt: expired, missing exp and not-yet-valid tokens are rejected", async () => {
+  assert.equal(await reasonFor(signJwt(validClaims({ exp: nowSeconds() - 120 }))), "token expired");
+  assert.equal(await reasonFor(signJwt(validClaims({ exp: undefined }))), "token expired");
+  assert.equal(await reasonFor(signJwt(validClaims({ exp: String(nowSeconds() + 600) }))), "token expired");
+  assert.equal(await reasonFor(signJwt(validClaims({ nbf: nowSeconds() + 600 }))), "token not yet valid");
+});
+
+test("jwt: malformed tokens are rejected", async () => {
+  assert.equal(await reasonFor("a.b.c"), "malformed JWT");
+});
+
+test("cache: a verified token is never reused past its own exp", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const exp = nowSeconds() + 60; // well inside the 5 minute cache TTL
+  const token = signJwt(validClaims({ exp }));
+  assert.equal((await verify(token)).cached, false);
+  assert.equal((await verify(token)).cached, true);
+  // Just past exp: the cache entry is gone, so the token is checked afresh
+  // (still inside the 30 second clock skew, so it passes once more).
+  t.mock.timers.setTime(exp * 1000 + 1000);
+  assert.equal((await verify(token)).cached, false);
+  // Past the clock skew: rejected, not served from the cache.
+  t.mock.timers.setTime(exp * 1000 + 31_000);
+  assert.equal(await reasonFor(token), "token expired");
+});
+
+test("opaque: a userinfo rejection is reported, and a success is cached", async () => {
+  await withUserinfo(null, async () => {
+    assert.equal(await reasonFor("opaque-bad"), "opaque token, userinfo returned 401");
+  });
+  await withUserinfo({ preferred_username: "alice" }, async (calls) => {
+    assert.equal((await verify("opaque-good")).ok, true);
+    assert.equal((await verify("opaque-good")).cached, true);
+    assert.equal(calls.length, 1);
+  });
+});
