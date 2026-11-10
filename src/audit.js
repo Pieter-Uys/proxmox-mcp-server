@@ -25,13 +25,16 @@ export function redactSecrets(value) {
   }
   return value;
 }
+// Returns true once the entry is on disk, false if the write failed.
 export function audit(entry) {
   try {
     fs.appendFileSync(
       SECURITY.auditLog,
       JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
     );
+    return true;
   } catch (error) {
     console.error("Audit write failed:", error.message);
+    return false;
   }
 }
