@@ -23,5 +23,10 @@ export const JWKS_MIN_REFETCH_MS = 30 * 1000; // throttle refetches triggered by
 // Authentik
 export const AUTHENTIK_REQUEST_TIMEOUT_MS = 10 * 1000;
 
-// SSE
+// SSE keepalive for GET /mcp streams
 export const SSE_KEEPALIVE_INTERVAL_MS = 15 * 1000;
+
+// Proxmox API. A stalled API would otherwise hold a tool call open forever,
+// and an unbounded reply would be read into memory whole.
+export const PROXMOX_REQUEST_TIMEOUT_MS = 30 * 1000;
+export const PROXMOX_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;

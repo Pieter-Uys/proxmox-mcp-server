@@ -39,8 +39,6 @@ if (SECURITY.rateLimitPerMinute > 0) {
       "/authorize",
       "/token",
       "/mcp",
-      "/sse",
-      "/messages",
     ],
     rateLimiter,
   );

@@ -1,5 +1,6 @@
 import https from "node:https";
 import { CONFIG } from "./config.js";
+import { PROXMOX_REQUEST_TIMEOUT_MS, PROXMOX_MAX_RESPONSE_BYTES } from "./constants.js";
 
 // ─── Proxmox API ────────────────────────────────────────────────────────────
 // Uses https.request rather than fetch: fetch ignores the `agent` option, so
@@ -67,16 +68,48 @@ function buildRequest(method, apiPath, body) {
 }
 
 // Sends the request and resolves with { status, text } once the body is read.
-function sendRequest({ url, options, payload }) {
+// The whole exchange, including a slow trickle of body bytes, must finish
+// within `timeoutMs`, and the body may not exceed `maxBytes`. `request` is
+// https.request; tests pass http.request to talk to a local stand-in.
+export function sendRequest(
+  { url, options, payload },
+  { timeoutMs = PROXMOX_REQUEST_TIMEOUT_MS, maxBytes = PROXMOX_MAX_RESPONSE_BYTES, request: send = https.request } = {},
+) {
   return new Promise((resolve, reject) => {
-    const request = https.request(url, options, (response) => {
-      let text = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => (text += chunk));
-      response.on("end", () => resolve({ status: response.statusCode, text }));
-      response.on("error", reject);
+    // Declared before anything can call fail(), so the order of callbacks
+    // from `send` never matters.
+    let settled = false;
+    let request;
+    let deadline;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      request?.destroy();
+      reject(error);
+    };
+    deadline = setTimeout(
+      () => fail(new Error(`Proxmox API did not answer within ${timeoutMs / 1000}s.`)),
+      timeoutMs,
+    );
+    request = send(url, options, (response) => {
+      const chunks = [];
+      let bytes = 0;
+      response.on("data", (chunk) => {
+        bytes += chunk.length;
+        if (bytes > maxBytes)
+          return fail(new Error(`Proxmox reply is larger than ${maxBytes} bytes. Narrow the query (a more specific path or filter) and try again.`));
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString("utf8") });
+      });
+      response.on("error", fail);
     });
-    request.on("error", reject);
+    request.on("error", fail);
     request.end(payload ?? undefined);
   });
 }

@@ -13,10 +13,22 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   if (!rpcRequest || typeof rpcRequest !== "object" || Array.isArray(rpcRequest))
     return rpcError(null, RPC_ERROR_CODES.INVALID_REQUEST, "Invalid request");
   const { method, params, id } = rpcRequest;
-  console.log("RPC:", forLog(method), forLog(id));
+  // A request without an id is a notification: JSON-RPC forbids answering
+  // one, even with an error.
+  const isNotification = !Object.hasOwn(rpcRequest, "id");
+  console.log("RPC:", forLog(method, 60), describeRpcTarget(rpcRequest), isNotification ? "(notification)" : `id=${forLog(id, 40)}`);
   if (!Object.hasOwn(METHODS, method))
-    return rpcError(id, RPC_ERROR_CODES.METHOD_NOT_FOUND, "Method not found: " + method);
-  return METHODS[method](id, params, caller);
+    return isNotification
+      ? null
+      : rpcError(id, RPC_ERROR_CODES.METHOD_NOT_FOUND, "Method not found: " + forLog(method, 100));
+  const response = await METHODS[method](id, params, caller);
+  return isNotification ? null : response;
+}
+
+// The tool a tools/call names, for logs. Arguments are never logged: they can
+// hold passwords and other secrets.
+function describeRpcTarget({ method, params }) {
+  return method === "tools/call" ? `tool=${forLog(params?.name, 60)}` : "";
 }
 
 // The version clients see, read from package.json so it has one source.
@@ -65,6 +77,11 @@ async function handleToolCall(id, params, caller) {
       ...outcomeFields,
     });
 
+  // An unknown tool is a protocol error (MCP: -32602), not a tool result.
+  if (!findTool(toolName)) {
+    auditToolCall({ outcome: "unknown_tool" });
+    return rpcError(id, RPC_ERROR_CODES.INVALID_PARAMS, `Unknown tool: ${forLog(toolName, 100)}`);
+  }
   const refusal = checkToolCall(toolName, args);
   // Only for arguments that passed validation: a tool's fields can assume
   // well-formed input (a string script name, not an object).
@@ -111,7 +128,9 @@ async function runTool(id, toolName, args, auditToolCall) {
   } catch (error) {
     console.error(`Tool error (${forLog(toolName)}):`, error);
     auditToolCall({ outcome: "error", error: error.message, ms: Date.now() - startedAt });
-    return rpcError(id, RPC_ERROR_CODES.SERVER_ERROR, error.message);
+    // A tool that failed while running is a result the model should see and
+    // react to; JSON-RPC errors are for protocol faults.
+    return toolErrorResult(id, `Tool failed: ${error.message}`);
   }
 }
 

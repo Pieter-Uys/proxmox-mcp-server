@@ -11,7 +11,7 @@ Proxmox MCP Server is self-hosted software. It runs on your own infrastructure a
 ## What the server logs
 
 - **Audit log** (`AUDIT_LOG`, JSON Lines on local disk): timestamp, authenticated user, source IP, tool name, arguments, outcome and duration. For community scripts it also records the script URL and git ref. Fields named like passwords, secrets, tokens or private keys are redacted. You control retention and rotation.
-- **Process logs** (stdout or journald): request method names and truncated request or response summaries, with control characters stripped.
+- **Process logs** (stdout or journald): the JSON-RPC method, the tool name, the request id and whether the reply was an error, with control characters stripped. Tool arguments and results are never written to the process log.
 
 ## Network destinations
 
