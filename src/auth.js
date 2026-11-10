@@ -15,7 +15,7 @@ import { singleFlight } from "./utils.js";
 // Verifies the bearer token and sets req.ctx = { ip, user }. What happens to a
 // bad token depends on AUTH_MODE: enforce rejects it, log lets it through.
 export async function requireAuth(req, res, next) {
-  const ip = req.headers["cf-connecting-ip"] || req.ip;
+  const ip = clientIp(req);
   req.ctx = { ip, user: "anonymous" };
   if (SECURITY.authMode === "off") return next();
 
@@ -31,6 +31,15 @@ export async function requireAuth(req, res, next) {
     return next();
   }
   rejectUnauthorized(res, authResult.reason);
+}
+
+// The caller's IP for the audit log. cf-connecting-ip is only believed when the
+// server is configured to sit behind a proxy (TRUST_PROXY_HOPS > 0); exposed
+// directly, any client could send that header and write any IP into the log.
+// req.ip already follows Express's trust proxy setting.
+export function clientIp(req) {
+  const forwarded = req.headers["cf-connecting-ip"];
+  return SECURITY.trustProxyHops > 0 && forwarded ? forwarded : req.ip;
 }
 
 // Logs every failure, and successes only when freshly verified (not cache hits).
@@ -63,23 +72,43 @@ function rejectUnauthorized(res, reason) {
 
 // ─── Bearer token verification ──────────────────────────────────────────────
 // Returns { ok: true, user, cached, scope? } or { ok: false, reason, detail?, tokenShape? }.
-async function verifyBearerToken(req) {
+export async function verifyBearerToken(req) {
   const token = readBearerToken(req);
   if (!token) return { ok: false, reason: "missing bearer token" };
-  const cachedUser = getCachedUser(token);
-  if (cachedUser !== undefined) return { ok: true, user: cachedUser, cached: true };
+  const verification = await verifyToken(token);
+  if (!verification.ok) return verification;
+  // Checked on every request, cache hits included, so the cache can never
+  // let through a user the allowlist refuses.
+  if (!isUserAllowed(verification.identities))
+    return { ok: false, reason: "user not allowed", detail: verification.user };
+  const { user, scope, cached } = verification;
+  return { ok: true, user, scope, cached };
+}
+
+// Checks a token's signature and claims, or reuses a recent result for it.
+async function verifyToken(token) {
+  const cached = getCachedVerification(token);
+  if (cached) return { ok: true, ...cached, cached: true };
   try {
     const verification = looksLikeJwt(token)
       ? await verifyJwt(token)
       : await verifyOpaqueToken(token);
     if (!verification.ok) return verification;
-    cacheVerifiedUser(token, verification);
-    return { ok: true, user: verification.user, scope: verification.scope, cached: false };
+    cacheVerification(token, verification);
+    return { ...verification, cached: false };
   } catch (error) {
     // Keep internal details (e.g. JWKS fetch failures) out of the 401 response.
     console.error("Token verification error:", error);
     return { ok: false, reason: "token verification failed", detail: error.message };
   }
+}
+
+// ALLOWED_USERS unset means anyone Authentik signs in may use the server.
+// Otherwise one of the token's identities must be listed (case-insensitive).
+function isUserAllowed(identities) {
+  const allowed = SECURITY.allowedUsers;
+  if (!allowed) return true;
+  return identities.some((identity) => allowed.includes(identity.toLowerCase()));
 }
 
 // Returns the token from "Authorization: Bearer <token>", or null. Plain string
@@ -100,20 +129,30 @@ function usernameFromClaims(claims) {
   return claims.preferred_username || claims.email || claims.sub || "unknown";
 }
 
-// ─── Verified-token cache ───────────────────────────────────────────────────
-const verifiedTokenCache = new Map(); // sha256(token) -> { user, expiresAt }
-const cacheKeyFor = (token) => crypto.createHash("sha256").update(token).digest("hex");
-
-function getCachedUser(token) {
-  const entry = verifiedTokenCache.get(cacheKeyFor(token));
-  return entry && entry.expiresAt > Date.now() ? entry.user : undefined;
+// Every name ALLOWED_USERS may list for this user: username, email and subject id.
+function identitiesFromClaims(claims) {
+  return [claims.preferred_username, claims.email, claims.sub].filter(
+    (value) => typeof value === "string" && value !== "",
+  );
 }
 
-// Caps the lifetime so long-lived JWTs are still re-verified periodically.
-function cacheVerifiedUser(token, verification) {
+// ─── Verified-token cache ───────────────────────────────────────────────────
+const verifiedTokenCache = new Map(); // sha256(token) -> { user, identities, expiresAt }
+const cacheKeyFor = (token) => crypto.createHash("sha256").update(token).digest("hex");
+
+function getCachedVerification(token) {
+  const entry = verifiedTokenCache.get(cacheKeyFor(token));
+  if (!entry || entry.expiresAt <= Date.now()) return undefined;
+  return { user: entry.user, identities: entry.identities };
+}
+
+// Never past the token's own expiry, and capped so long-lived JWTs are still
+// re-verified periodically.
+function cacheVerification(token, verification) {
   if (verifiedTokenCache.size > MAX_CACHED_TOKENS) verifiedTokenCache.clear();
   verifiedTokenCache.set(cacheKeyFor(token), {
     user: verification.user,
+    identities: verification.identities,
     expiresAt: Math.min(verification.expiresAt, Date.now() + TOKEN_CACHE_TTL_MS),
   });
 }
@@ -125,9 +164,11 @@ async function verifyOpaqueToken(token) {
   });
   if (!response.ok)
     return { ok: false, reason: `opaque token, userinfo returned ${response.status}` };
+  const claims = await response.json();
   return {
     ok: true,
-    user: usernameFromClaims(await response.json()),
+    user: usernameFromClaims(claims),
+    identities: identitiesFromClaims(claims),
     expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
   };
 }
@@ -142,6 +183,7 @@ async function verifyJwt(token) {
   return {
     ok: true,
     user: usernameFromClaims(jwt.claims),
+    identities: identitiesFromClaims(jwt.claims),
     scope: jwt.claims.scope,
     expiresAt: jwt.claims.exp * 1000,
   };
@@ -184,6 +226,16 @@ async function checkSignature({ header, signedPart, signature }) {
 const CLAIM_RULES = [
   { reason: "wrong issuer", fails: (claims) => claims.iss !== AUTHENTIK.issuer },
   {
+    // Only when AUTHENTIK_AUDIENCE is set. `aud` may be a string or an array.
+    reason: "wrong audience",
+    fails: (claims) => {
+      const expected = CONFIG.authentik.audience;
+      if (!expected) return false;
+      const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+      return !audiences.includes(expected);
+    },
+  },
+  {
     reason: "token expired",
     fails: (claims, nowSeconds) =>
       typeof claims.exp !== "number" || claims.exp < nowSeconds - JWT_CLOCK_SKEW_SECONDS,
@@ -225,3 +277,20 @@ const refreshJwks = singleFlight(async () => {
   );
   jwks.fetchedAt = Date.now();
 });
+
+// ─── Test-only hooks ────────────────────────────────────────────────────────
+// TEST ONLY. Not used by the server. Lets the tests verify real signed JWTs
+// without network access, by standing in for a JWKS fetch.
+export const authTestHooks = {
+  // Installs { kid: KeyObject } as if just fetched from Authentik.
+  setSigningKeys(keysById) {
+    jwks.keysById = new Map(Object.entries(keysById));
+    jwks.fetchedAt = Date.now();
+  },
+  // Forgets every cached verification and signing key.
+  reset() {
+    verifiedTokenCache.clear();
+    jwks.keysById = new Map();
+    jwks.fetchedAt = 0;
+  },
+};

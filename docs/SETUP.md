@@ -55,6 +55,11 @@ In Authentik, create an **OAuth2/OpenID Provider** and an **Application** that u
 
 Then bind the application to the users or groups allowed to use it.
 
+Two optional settings tighten this further:
+
+- `AUTHENTIK_AUDIENCE`: set it to the provider's client ID. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider.
+- `ALLOWED_USERS`: a comma-separated list of usernames, emails or subject IDs. It is a second check after the application binding, applied on every request. Usernames or subject IDs are the safer choice: depending on your Authentik flows, users may be able to change their own email address.
+
 ## 4. Configure the server
 
 ```
@@ -63,7 +68,7 @@ cp .env.example .env
 
 Fill in at least `PROXMOX_HOST`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_SSH_HOST`, `MCP_BASE_URL` (your public address) and `AUTHENTIK_URL`. The server refuses to start if any of them is missing. All settings are listed in the README.
 
-If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit.
+If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit. With it set, the audit log records the client IP from Cloudflare's `cf-connecting-ip` header. Behind a proxy other than Cloudflare, make sure the proxy removes any `cf-connecting-ip` header sent by clients.
 
 ## 5. Run it
 

@@ -131,6 +131,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `MCP_BASE_URL` | **Required.** Public HTTPS address of this server |
 | `AUTHENTIK_URL` | **Required.** Base URL of your Authentik instance |
 | `AUTHENTIK_APP_SLUG` | Authentik application slug, e.g. `proxmox-mcp` |
+| `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. When set, a JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Unset skips the check. Opaque tokens have no `aud` to check |
 
 **Security**
 
@@ -140,7 +141,8 @@ The server will not start unless the variables marked **required** are set, so a
 | `SHELL_MODE` | See [Modes](#modes) |
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
-| `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. |
+| `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
+| `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. |
 
 ## Tests
 

@@ -30,6 +30,15 @@ function parseNonNegativeInt(name, fallback) {
   return Number(raw);
 }
 
+// Reads an optional comma-separated list, lower-cased, or null when unset or empty.
+function parseOptionalList(name) {
+  const entries = (process.env[name] || "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  return entries.length ? entries : null;
+}
+
 // Reads an optional comma-separated CIDR list, or null when unset. Refuses to
 // start on a malformed entry, since dropping it would change who is reachable.
 function parseOptionalCidrList(name) {
@@ -72,6 +81,10 @@ export const CONFIG = {
   authentik: {
     url: process.env.AUTHENTIK_URL,
     slug: process.env.AUTHENTIK_APP_SLUG || "proxmox-mcp",
+    // The OAuth client id. When set, a JWT is accepted only if its `aud` claim
+    // names it, so a token Authentik issued for another application on the
+    // same provider can't be replayed here.
+    audience: process.env.AUTHENTIK_AUDIENCE?.trim() || undefined,
   },
 };
 
@@ -87,6 +100,9 @@ export const SECURITY = {
   // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
   // so the limiter sees real client IPs. 0 means no proxy.
   trustProxyHops: parseNonNegativeInt("TRUST_PROXY_HOPS", "0"),
+  // Usernames, emails or subject ids allowed to use the server, or null for
+  // anyone Authentik signs in. A second check after Authentik's own binding.
+  allowedUsers: parseOptionalList("ALLOWED_USERS"),
   // Addresses vm_ssh may connect to, as a net.BlockList, or null for any
   // address (server.js warns at startup when it is unset).
   vmSshAllowedCidrs: parseOptionalCidrList("VM_SSH_ALLOWED_CIDRS"),
