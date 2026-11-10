@@ -78,6 +78,11 @@ async function handleToolCall(id, params, caller) {
       ...outcomeFields,
     });
 
+  // An unknown tool is a protocol error (MCP: -32602), not a tool result.
+  if (!findTool(toolName)) {
+    auditToolCall({ outcome: "unknown_tool" });
+    return rpcError(id, RPC_ERROR_CODES.INVALID_PARAMS, `Unknown tool: ${forLog(toolName, 100)}`);
+  }
   const refusal = checkToolCall(toolName, args);
   // Only for arguments that passed validation: a tool's fields can assume
   // well-formed input (a string script name, not an object).

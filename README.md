@@ -99,7 +99,7 @@ The server refuses to start if any of these has an unrecognised value, or if `VM
 - **`confirm: true` is a speed bump, not a hard boundary.** The model sets it. It works alongside the client's own tool-approval prompts and the audit trail.
 - **Set `PROXMOX_SSH_HOST_KEY`**, and narrow `VM_SSH_ALLOWED_CIDRS` to your VM subnets. The default allows every private range, which includes the Proxmox host and the rest of your LAN.
 - **Pin community scripts** with `COMMUNITY_SCRIPTS_REF` if you use `run_community_script`, or disable shell tools if you don't.
-- **One JSON-RPC request per POST.** Batches (a JSON array) are refused with Invalid Request, as in MCP revision 2025-06-18, so one HTTP request can't fan out into many tool calls. Notifications never get a reply. A tool that fails while running returns a result with `isError: true`, so the model can see what went wrong.
+- **One JSON-RPC request per POST.** Batches (a JSON array) are refused with Invalid Request, as in MCP revision 2025-06-18, so one HTTP request can't fan out into many tool calls. Notifications never get a reply. A tool that fails while running returns a result with `isError: true`, so the model can see what went wrong. Calling a tool that doesn't exist is a protocol error (Invalid params), as the MCP spec requires.
 - **Proxmox API calls time out after 30 seconds** and fail if the reply is larger than 5 MiB, with a message to narrow the query.
 - **CORS allows any origin** (`Access-Control-Allow-Origin: *`). This is deliberate: clients send a bearer token in the `Authorization` header and the server sets no cookies, so a page on another origin has no ambient credentials to abuse. If you only expect specific browser-based clients, tighten it in `server.js`.
 
