@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { handleJsonRpc, negotiateProtocolVersion, toolAuditFields } from "../src/jsonrpc.js";
-import { SECURITY } from "../src/config.js";
+import { CONFIG, SECURITY } from "../src/config.js";
 
 const initialize = (params) =>
   handleJsonRpc({ jsonrpc: "2.0", id: 1, method: "initialize", params });
@@ -37,7 +37,9 @@ test("a community script call is audited with the exact URL and ref it would run
   // A file of its own: other test files write the shared audit log in parallel.
   const logFile = path.join(os.tmpdir(), "proxmox-mcp-test", `jsonrpc-${process.pid}.jsonl`);
   const previousLog = SECURITY.auditLog;
+  const previousRef = CONFIG.communityScripts.ref;
   SECURITY.auditLog = logFile;
+  CONFIG.communityScripts.ref = undefined; // this test is about the unpinned default
   fs.rmSync(logFile, { force: true });
   try {
     const response = await handleJsonRpc({
@@ -53,6 +55,30 @@ test("a community script call is audited with the exact URL and ref it would run
     assert.equal(entry.scriptUrl, "https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/pihole.sh");
     assert.equal(entry.scriptRef, "main");
     assert.equal(entry.scriptPinned, false);
+  } finally {
+    SECURITY.auditLog = previousLog;
+    CONFIG.communityScripts.ref = previousRef;
+    fs.rmSync(logFile, { force: true });
+  }
+});
+
+test("a malformed script argument is reported as invalid and audited, not an internal error", async () => {
+  const logFile = path.join(os.tmpdir(), "proxmox-mcp-test", `jsonrpc-invalid-${process.pid}.jsonl`);
+  const previousLog = SECURITY.auditLog;
+  SECURITY.auditLog = logFile;
+  fs.rmSync(logFile, { force: true });
+  try {
+    const response = await handleJsonRpc({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "run_community_script", arguments: { script: { toString: null } } },
+    });
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /Invalid arguments: script must be of type string/);
+    const [entry] = fs.readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(entry.outcome, "invalid");
+    assert.equal(entry.scriptUrl, undefined);
   } finally {
     SECURITY.auditLog = previousLog;
     fs.rmSync(logFile, { force: true });

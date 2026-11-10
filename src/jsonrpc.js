@@ -47,7 +47,7 @@ const METHODS = {
 async function handleToolCall(id, params, caller) {
   const toolName = params?.name;
   const args = params?.arguments || {};
-  const toolFields = toolAuditFields(toolName, args);
+  let toolFields = {};
   const auditToolCall = (outcomeFields) =>
     audit({
       event: "tool_call",
@@ -60,6 +60,9 @@ async function handleToolCall(id, params, caller) {
     });
 
   const refusal = checkToolCall(toolName, args);
+  // Only for arguments that passed validation: a tool's fields can assume
+  // well-formed input (a string script name, not an object).
+  if (refusal?.outcome !== "invalid") toolFields = toolAuditFields(toolName, args);
   if (refusal) {
     auditToolCall({ outcome: refusal.outcome, reason: refusal.reason });
     return toolErrorResult(id, refusal.message);
@@ -68,8 +71,7 @@ async function handleToolCall(id, params, caller) {
 }
 
 // Extra audit fields a tool adds, e.g. which script URL a community script
-// call would run. Only for arguments that are an object, so a malformed call
-// can't make this throw before it is audited and refused.
+// call would run. Called only after the arguments are validated.
 export function toolAuditFields(toolName, args) {
   const tool = findTool(toolName);
   if (!tool?.auditFields || !args || typeof args !== "object") return {};

@@ -42,13 +42,21 @@ function parseOptionalGitRef(name) {
   return raw;
 }
 
-// Reads an optional comma-separated list, lower-cased, or null when unset or empty.
+// Reads an optional comma-separated list, lower-cased, or null when unset or
+// blank. A value with no entries in it (",") refuses to start: it means a
+// restriction was intended, and null would mean no restriction at all.
 function parseOptionalList(name) {
-  const entries = (process.env[name] || "")
+  const raw = process.env[name];
+  if (!raw?.trim()) return null;
+  const entries = raw
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
-  return entries.length ? entries : null;
+  if (!entries.length) {
+    console.error(`${name} is set but lists no entries, got "${raw}". Remove it or list at least one.`);
+    process.exit(1);
+  }
+  return entries;
 }
 
 // Reads an optional comma-separated CIDR list, or null when unset. Refuses to

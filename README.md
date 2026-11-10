@@ -75,7 +75,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Layer | What it does |
 | --- | --- |
 | **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Opaque tokens are checked through Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` optionally limits which signed-in users are accepted, checked on every request. |
-| **Confirmation** | Deletes, hard stops, network apply, ZFS commands, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` and similar), are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **Confirmation** | Deletes, hard stops, network apply, ZFS commands, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address, inside `VM_SSH_ALLOWED_CIDRS` when set, and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on`. |
 | **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `zfsCommand`) are restricted to safe formats. |
@@ -157,7 +157,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
 | `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
-| `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. |
+| `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. A value that lists no entries (such as `,`) stops the server at startup. |
 
 ## Tests
 
@@ -174,7 +174,7 @@ The suite covers:
 - which tool calls require `confirm: true`, and that only the boolean `true` counts
 - argument validation against the real tool schemas, including shell and path injection attempts
 - audit log redaction of secret-looking fields
-- sensitive-path reads (including `..` traversal and `/proc/*/root` paths) and the `smartctl` set forms behind `-l` and `-d`
+- sensitive-path reads (including `..` traversal and `/proc/*/root` paths), recursive `grep` in its abbreviated forms (`--rec`, `-d rec`), `ps e` and the `smartctl` set forms behind `-l` and `-d`
 - `vm_ssh` IP validation, `VM_SSH_ALLOWED_CIDRS` and the password gate
 - JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS` and the token cache
 - community script URLs and their audit fields

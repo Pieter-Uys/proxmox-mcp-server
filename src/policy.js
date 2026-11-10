@@ -8,7 +8,7 @@ import { SECURITY } from "./config.js";
 export function shellConfirmationReason(args) {
   const command = String(args.command || "");
   if (isReadonlyCommand(command)) return null;
-  return readsSensitivePath(command)
+  return readsSensitivePathOnly(command)
     ? "This command reads a path that can hold secrets (keys, password hashes, cluster credentials)."
     : "This command isn't on the read-only list, so it could change the system.";
 }
@@ -50,13 +50,13 @@ const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 // matters here: it needs confirm: true, and SHELL_MODE=readonly refuses it.
 export function isReadonlyCommand(command) {
   const words = plainWords(command);
-  if (!words) return false;
-  const [name, ...args] = words;
-  return (
-    Object.hasOwn(READONLY_COMMANDS, name) &&
-    READONLY_COMMANDS[name](args) &&
-    !touchesSensitivePath(name, args)
-  );
+  return words !== null && passesAllowlist(words) && !touchesSensitivePath(words[0], words.slice(1));
+}
+
+// True if the command's own rule accepts its arguments, before the
+// sensitive-path check.
+function passesAllowlist([name, ...args]) {
+  return Object.hasOwn(READONLY_COMMANDS, name) && READONLY_COMMANDS[name](args);
 }
 
 // The command's words, or null if any word is something the shell would interpret.
@@ -65,9 +65,12 @@ function plainWords(command) {
   return words.every((word) => PLAIN_WORD.test(word)) ? words : null;
 }
 
-function readsSensitivePath(command) {
+// True if the command would be read-only but for a sensitive path. Commands
+// that could also change something (rm, chmod) get the general reason instead,
+// so the approval text never calls a delete a read.
+function readsSensitivePathOnly(command) {
   const words = plainWords(command);
-  return words !== null && touchesSensitivePath(words[0], words.slice(1));
+  return words !== null && passesAllowlist(words) && touchesSensitivePath(words[0], words.slice(1));
 }
 
 // ─── Sensitive paths ────────────────────────────────────────────────────────
@@ -106,7 +109,8 @@ const SENSITIVE_NAMES = [
   /^\.ssh$/i,
   /\.pem$/i,
   /\.key$/i,
-  /\.env$/i,
+  /^\.env(\..+)?$/i, // .env, .env.local, .env.production
+  /\.env$/i, // prod.env
 ];
 
 // Commands that print file contents. For these, raw devices are sensitive too:
@@ -175,17 +179,36 @@ function startsWithSegments(segments, prefix) {
 // A recursive grep reads every file under a directory, so `grep -r x /etc`
 // would read /etc/shadow without naming it. Checking each file it might reach
 // isn't possible here, so recursive grep always needs confirmation.
+//
+// GNU grep accepts any unambiguous prefix of a long option (--rec) and of an
+// option value (-d rec), so prefixes are matched, not exact spellings. A
+// prefix too short to be unambiguous makes grep exit with an error, so
+// matching it too is harmless.
 function isRecursiveGrep(args) {
-  return args.some(
-    (arg, index) =>
-      (/^-[A-Za-z]+$/.test(arg) && /[rR]/.test(arg)) ||
-      /^--(dereference-)?recursive$/.test(arg) ||
-      arg === "--directories=recurse" ||
-      arg === "-drecurse" ||
-      (arg === "-d" && args[index + 1] === "recurse") ||
-      (arg === "--directories" && args[index + 1] === "recurse"),
-  );
+  return args.some((arg, index) => {
+    const next = args[index + 1];
+    if (/^-[A-Za-z]+$/.test(arg)) {
+      // -r or -R anywhere in a cluster. That also covers a value attached to
+      // -d (-drec, -idrecurse), since every prefix of "recurse" starts with r.
+      // A cluster ending in d takes the next word as its value (-d rec).
+      return /[rR]/.test(arg) || (arg.endsWith("d") && isRecurseValue(next));
+    }
+    if (!arg.startsWith("--")) return false;
+    const [name, attachedValue] = splitLongOption(arg);
+    if (isLongOptionPrefix(name, "--recursive") || isLongOptionPrefix(name, "--dereference-recursive"))
+      return true;
+    return isLongOptionPrefix(name, "--directories") && isRecurseValue(attachedValue ?? next);
+  });
 }
+
+function splitLongOption(arg) {
+  const equals = arg.indexOf("=");
+  return equals === -1 ? [arg, undefined] : [arg.slice(0, equals), arg.slice(equals + 1)];
+}
+
+// "--rec" for "--recursive": at least one letter after the dashes.
+const isLongOptionPrefix = (name, option) => name.length > 2 && option.startsWith(name);
+const isRecurseValue = (value) => typeof value === "string" && value !== "" && "recurse".startsWith(value);
 
 const anyArgs = () => true;
 const firstArgIn = (...allowed) => (args) => allowed.includes(args[0]);
@@ -259,6 +282,27 @@ function isReadonlySmartctl(args) {
   return true;
 }
 
+// ─── ps ─────────────────────────────────────────────────────────────────────
+// BSD-style ps options (no dash) include `e`, which prints every process's
+// environment after its command: `ps eww`, `ps auxe`. That is the same data
+// /proc/*/environ holds, so it is treated the same way.
+// Short options that take the next word as a value, alone (-o) or at the end of a cluster (-eo).
+const PS_VALUE_LETTERS = "CGUgpqstuoOk";
+const PS_LONG_VALUE_OPTIONS = /^--(pid|ppid|sid|tty|user|User|group|Group|format|sort|cols|columns|rows|width|quick-pid)$/;
+
+function printsProcessEnvironment(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    const takesValue = /^-[A-Za-z]+$/.test(arg) && PS_VALUE_LETTERS.includes(arg.at(-1));
+    if (takesValue || PS_LONG_VALUE_OPTIONS.test(arg)) {
+      index++; // the option's value, e.g. the name in -C pveproxy
+      continue;
+    }
+    if (/^[A-Za-z]+$/.test(arg) && arg.includes("e")) return true;
+  }
+  return false;
+}
+
 const READONLY_COMMANDS = {
   // Readers whose options can't change anything.
   ls: anyArgs,
@@ -272,7 +316,7 @@ const READONLY_COMMANDS = {
   du: anyArgs,
   free: anyArgs,
   uptime: anyArgs,
-  ps: anyArgs,
+  ps: (args) => !printsProcessEnvironment(args),
   lsblk: anyArgs,
   uname: anyArgs,
   whoami: anyArgs,

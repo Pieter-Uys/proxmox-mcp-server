@@ -110,65 +110,87 @@ for (const [group, commands] of Object.entries(REFUSED)) {
 }
 
 // ─── Sensitive paths ────────────────────────────────────────────────────────
+// One command per line, so long tables of commands stay easy to read.
+const lines = (text) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
 const SENSITIVE_READS = {
-  "listed paths and anything under them": [
-    "cat /etc/shadow",
-    "cat /etc/shadow-",
-    "cat /etc/gshadow",
-    "ls /etc/pve/priv",
-    "cat /etc/pve/priv/authkey.key",
-    "cat /etc/pve/priv/token.cfg",
-    "cat /etc/pve/user.cfg",
-    "cat /etc/corosync/authkey",
-    "ls -la /root/.ssh",
-    "cat /root/.ssh/config",
-    "cat /home/alice/.ssh/config",
-    "cat /etc/ssh/ssh_host_ed25519_key",
-    "stat /etc/ssh/ssh_host_rsa_key.pub",
-    "du -sh /var/lib/pve-cluster",
-    "head /var/lib/pve-cluster/config.db",
-    "cat /proc/1/environ",
-  ],
-  "secret-looking file names anywhere": [
-    "cat /opt/app/id_rsa",
-    "cat /srv/backup/id_ed25519.bak",
-    "cat /etc/ssl/private/server.pem",
-    "cat /etc/pve/nodes/pve/pve-ssl.key",
-    "cat /opt/proxmox-mcp/.env",
-    "cat .env",
-    "tail /root/.ssh/authorized_keys",
-    "find / -name authorized_keys",
-  ],
-  "traversal, repeated slashes and other roots": [
-    "cat /etc/../etc/shadow",
-    "cat /etc//shadow",
-    "cat //etc/shadow",
-    "cat /var/../etc/./shadow",
-    "cat ../../etc/shadow",
-    "cat etc/shadow",
-    "cat /proc/1/root/etc/shadow",
-    "cat /var/lib/lxc/101/rootfs/etc/shadow",
-    "cat /home/alice/../../root/.ssh/id_ed25519",
-  ],
-  "paths passed as option values": [
-    "grep -f /etc/shadow /var/log/syslog",
-    "grep -f/etc/shadow /var/log/syslog",
-    "grep --file=/etc/shadow /var/log/syslog",
-    "journalctl --file=/var/lib/pve-cluster/config.db",
-  ],
-  "recursive grep, which would reach secrets without naming them": [
-    "grep -r password /etc",
-    "grep -R password /etc",
-    "grep -rn password /var/log",
-    "grep --recursive password /etc",
-    "grep -d recurse password /etc",
-    "grep --directories=recurse password /etc",
-  ],
-  "raw devices read by content readers": [
-    "head -c 1000000 /dev/sda",
-    "cat /dev/mapper/pve-root",
-    "grep -a root /dev/sda1",
-  ],
+  "listed paths and anything under them": lines(`
+    cat /etc/shadow
+    cat /etc/shadow-
+    cat /etc/gshadow
+    ls /etc/pve/priv
+    cat /etc/pve/priv/authkey.key
+    cat /etc/pve/priv/token.cfg
+    cat /etc/pve/user.cfg
+    cat /etc/corosync/authkey
+    ls -la /root/.ssh
+    cat /root/.ssh/config
+    cat /home/alice/.ssh/config
+    cat /etc/ssh/ssh_host_ed25519_key
+    stat /etc/ssh/ssh_host_rsa_key.pub
+    du -sh /var/lib/pve-cluster
+    head /var/lib/pve-cluster/config.db
+    cat /proc/1/environ
+  `),
+  "secret-looking file names anywhere": lines(`
+    cat /opt/app/id_rsa
+    cat /srv/backup/id_ed25519.bak
+    cat /etc/ssl/private/server.pem
+    cat /etc/pve/nodes/pve/pve-ssl.key
+    cat /opt/proxmox-mcp/.env
+    cat .env
+    tail /root/.ssh/authorized_keys
+    find / -name authorized_keys
+    cat /opt/app/.env.production
+    cat /srv/app/.env.local
+  `),
+  "traversal, repeated slashes and other roots": lines(`
+    cat /etc/../etc/shadow
+    cat /etc//shadow
+    cat //etc/shadow
+    cat /var/../etc/./shadow
+    cat ../../etc/shadow
+    cat etc/shadow
+    cat /proc/1/root/etc/shadow
+    cat /var/lib/lxc/101/rootfs/etc/shadow
+    cat /home/alice/../../root/.ssh/id_ed25519
+  `),
+  "paths passed as option values": lines(`
+    grep -f /etc/shadow /var/log/syslog
+    grep -f/etc/shadow /var/log/syslog
+    grep --file=/etc/shadow /var/log/syslog
+    journalctl --file=/var/lib/pve-cluster/config.db
+  `),
+  "recursive grep, which would reach secrets without naming them": lines(`
+    grep -r password /etc
+    grep -R password /etc
+    grep -rn password /var/log
+    grep --recursive password /etc
+    grep -d recurse password /etc
+    grep --directories=recurse password /etc
+    grep --rec password /etc
+    grep --der password /etc
+    grep -d rec password /etc
+    grep -id recurse password /etc
+    grep -drec password /etc
+    grep --directories=rec password /etc
+    grep --directories recurse password /etc
+  `),
+  "process environments printed by ps": lines(`
+    ps eww
+    ps auxe
+    ps e
+    ps -C pveproxy e
+  `),
+  "raw devices read by content readers": lines(`
+    head -c 1000000 /dev/sda
+    cat /dev/mapper/pve-root
+    grep -a root /dev/sda1
+  `),
 };
 
 for (const [group, commands] of Object.entries(SENSITIVE_READS)) {
@@ -176,7 +198,9 @@ for (const [group, commands] of Object.entries(SENSITIVE_READS)) {
     for (const command of commands) {
       assert.equal(isReadonlyCommand(command), false, `should not be read-only: ${command}`);
       await withShellMode("full", () => {
-        assert.match(getPolicyBlockReason(TOOLS.host_shell, { command }), /secrets.*confirm: true/, command);
+        // ps environment output is refused by the ps rule itself, so it gets the general reason.
+        const expected = group.startsWith("process environments") ? /could change the system.*confirm: true/ : /secrets.*confirm: true/;
+        assert.match(getPolicyBlockReason(TOOLS.host_shell, { command }), expected, command);
         assert.equal(getPolicyBlockReason(TOOLS.host_shell, { command, confirm: true }), null, command);
       });
       await withShellMode("readonly", () => {
@@ -207,9 +231,30 @@ test("ordinary reads stay read-only next to the sensitive-path check", () => {
     "smartctl -a /dev/sda",
     "lsblk /dev/sda",
     "ls /dev",
+    "grep -d skip error /var/log/syslog",
+    "grep --devices=skip error /var/log/syslog",
+    "grep --regexp=error /var/log/syslog",
+    "cat /etc/environment",
+    "ps aux",
+    "ps -ef",
+    "ps -eo user,pid,comm",
+    "ps -o user",
+    "ps -C pveproxy",
+    "ps --sort=pid",
   ]) {
     assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
   }
+});
+
+test("the confirmation reason names secrets only for reads, never for commands that change things", async () => {
+  await withShellMode("full", () => {
+    assert.match(getPolicyBlockReason(TOOLS.host_shell, { command: "cat /etc/shadow" }), /reads a path that can hold secrets/);
+    for (const command of ["rm -rf /root/.ssh", "chmod 777 /etc/shadow", "cp /etc/shadow /tmp/x"]) {
+      const reason = getPolicyBlockReason(TOOLS.host_shell, { command });
+      assert.match(reason, /could change the system/, command);
+      assert.doesNotMatch(reason, /reads a path/, command);
+    }
+  });
 });
 
 test("lxc_shell and vm_ssh apply the same sensitive-path check", async () => {
