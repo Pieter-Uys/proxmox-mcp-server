@@ -55,6 +55,68 @@ const hasShortOption = (args, letter) =>
 const hasLongOption = (args, name) =>
   args.some((arg) => arg === name || arg.startsWith(`${name}=`));
 
+// ─── smartctl ───────────────────────────────────────────────────────────────
+// smartctl mixes read and write forms behind the same options: `-l scterc`
+// reads the error recovery setting, but `-l scterc,70,70` sets it, and
+// `-l scttempint,N` sets the logging interval. So the value after -l / --log
+// must be a known read-only log name, with nothing after it.
+const SMARTCTL_READ_LOGS = new Set([
+  "error",
+  "xerror",
+  "selftest",
+  "xselftest",
+  "directory",
+  "background",
+  "scttemp",
+  "scttempsts",
+  "scttemphist",
+  "scterc",
+  "sataphy",
+  "sasphy",
+  "devstat",
+  "ssd",
+]);
+// A device type such as sat, scsi, nvme or auto. Types that take extra values
+// (megaraid,N and so on) are left out on purpose.
+const SMARTCTL_DEVICE_TYPE = /^[a-z][a-z0-9]*$/;
+// Option clusters that only print: -a all, -x xall, -H health, -i info,
+// -A attributes, -c capabilities, -j json. Anything else (-s, -t, -X, -o, -S
+// and so on) can enable, start or abort something, so it is refused.
+const SMARTCTL_PRINT_CLUSTER = /^-[aAHixcj]+$/;
+const SMARTCTL_PRINT_LONG = new Set(["--all", "--xall", "--health", "--info", "--attributes", "--capabilities", "--json"]);
+// Options that take a value, and the check that value must pass.
+const SMARTCTL_VALUE_OPTIONS = {
+  "-l": (value) => SMARTCTL_READ_LOGS.has(value),
+  "--log": (value) => SMARTCTL_READ_LOGS.has(value),
+  "-d": (value) => SMARTCTL_DEVICE_TYPE.test(value),
+  "--device": (value) => SMARTCTL_DEVICE_TYPE.test(value),
+};
+
+// Splits `--log=error` or `-lerror` into the option and its attached value.
+function splitSmartctlOption(arg) {
+  if (arg.startsWith("--")) {
+    const equals = arg.indexOf("=");
+    return equals === -1 ? [arg, undefined] : [arg.slice(0, equals), arg.slice(equals + 1)];
+  }
+  if (/^-[ld]./.test(arg)) return [arg.slice(0, 2), arg.slice(2)];
+  return [arg, undefined];
+}
+
+// Walks the arguments in order so a value is always checked as the value of
+// its option, never mistaken for a device path.
+function isReadonlySmartctl(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (!arg.startsWith("-")) continue; // a device path
+    if (SMARTCTL_PRINT_CLUSTER.test(arg) || SMARTCTL_PRINT_LONG.has(arg)) continue;
+    const [option, attachedValue] = splitSmartctlOption(arg);
+    if (!Object.hasOwn(SMARTCTL_VALUE_OPTIONS, option)) return false;
+    const value = attachedValue ?? args[++index];
+    if (value === undefined || !SMARTCTL_VALUE_OPTIONS[option](value)) return false;
+  }
+  return true;
+}
+
 const READONLY_COMMANDS = {
   // Readers whose options can't change anything.
   ls: anyArgs,
@@ -84,12 +146,7 @@ const READONLY_COMMANDS = {
     ),
   ss: (args) => !hasShortOption(args, "K") && !hasLongOption(args, "--kill"), // -K kills sockets
   sensors: (args) => !hasShortOption(args, "s") && !hasLongOption(args, "--set"),
-  smartctl: (args) =>
-    args.every(
-      (arg) =>
-        !arg.startsWith("-") ||
-        /^(-[aAHixcj]+|-[ld]\S*|--(all|xall|health|info|attributes|capabilities|json)|--(log|device)=\S+)$/.test(arg),
-    ), // refuses -s, -t, -X, -o, -S (these enable, start or abort things)
+  smartctl: isReadonlySmartctl,
   ip: (args) =>
     ["a", "addr", "address", "r", "route", "link"].includes(args[0]) &&
     (args.length === 1 || ["show", "list", "ls", "sh"].includes(args[1])),
