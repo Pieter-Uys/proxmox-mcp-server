@@ -34,7 +34,11 @@ export function getPolicyBlockReason(tool, args) {
   }
 
   const reason = tool.confirmationReason?.(args);
-  if (!reason || args.confirm === true) return null;
+  if (!reason) return null;
+  // Anything that would need approval is off the table in TOOL_MODE=readonly.
+  if (SECURITY.toolMode === "readonly")
+    return `Only reads are allowed (TOOL_MODE=readonly). ${reason}`;
+  if (args.confirm === true) return null;
   return `${reason} Ask the user to approve this exact action, then call again with confirm: true.`;
 }
 

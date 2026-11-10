@@ -49,9 +49,31 @@ function communityScriptConfirmationReason(args) {
   return `Community scripts download and run remote code as root. This runs ${url} (${pinNote}).`;
 }
 
+// zfs_create builds `zfs create` from structured arguments. It used to run
+// `zfs <anything>`, so `destroy -r rpool/data` was valid input to an action
+// named create, which would mislead the person approving it.
+const ZFS_PROPERTY_NAME = /^[a-z][a-z0-9_.:-]*$/; // native (compression) or user (com.example:owner)
+const ZFS_PROPERTY_VALUE = /^[A-Za-z0-9_.:/@+=,-]+$/;
+
 function zfsCommand(args) {
   if (args.action === "zfs_list") return "zfs list";
-  if (args.action === "zfs_create") return `zfs ${args.zfsCommand}`;
+  if (args.action !== "zfs_create") return null;
+  const parents = args.parents ? ["-p"] : [];
+  const properties = Object.entries(args.properties ?? {}).map(
+    ([name, value]) => `-o ${shellQuote(`${name}=${value}`)}`,
+  );
+  return ["zfs create", ...parents, ...properties, shellQuote(args.dataset)].join(" ");
+}
+
+// Why zfs_create's properties can't be used, or null. Values are quoted
+// anyway; this keeps them to plain names and values a person can read.
+function zfsPropertiesRefusal(args) {
+  if (args.action !== "zfs_create" || args.properties === undefined) return null;
+  for (const [name, value] of Object.entries(args.properties)) {
+    if (!ZFS_PROPERTY_NAME.test(name)) return `"${String(name).slice(0, 60)}" is not a ZFS property name.`;
+    if (typeof value !== "string" || !ZFS_PROPERTY_VALUE.test(value))
+      return `ZFS property ${name} needs a plain string value (letters, digits and _ . : / @ + = , -).`;
+  }
   return null;
 }
 
@@ -291,14 +313,15 @@ export const TOOLS = {
   },
 
   create_lxc: {
-    // Additive: creates a container, fails if the vmid exists.
+    // Additive, but advertised as destructive like every confirm-gated tool:
+    // it consumes resources and can create a privileged container.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
     },
-    description: "Create a new LXC container.",
+    description: "Create a new LXC container. Requires confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -318,6 +341,10 @@ export const TOOLS = {
       },
       required: ["vmid", "hostname", "ostemplate"],
     },
+    confirmationReason: (args) =>
+      args.unprivileged === false
+        ? "This creates a privileged container, which runs as real root on the host."
+        : "This creates a new container and uses host resources.",
     run: (args, node) =>
       proxmoxRequest("POST", `/nodes/${node}/lxc`, {
         vmid: args.vmid,
@@ -346,7 +373,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Start, stop, restart, or delete a VM or LXC. stop and delete require confirm: true.",
+      "Start, stop, restart, shut down or delete a VM or LXC. Every action requires confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -360,10 +387,11 @@ export const TOOLS = {
       },
       required: ["vmid", "action"],
     },
+    // Every action changes a guest's state; stop and delete can lose data.
     confirmationReason: (args) =>
       ["delete", "stop"].includes(args.action)
         ? `manage_vm ${args.action} is destructive.`
-        : null,
+        : `manage_vm ${args.action} changes whether the guest is running.`,
     run: (args, node) => {
       const guestPath = `/nodes/${node}/${args.type || "lxc"}/${args.vmid}`;
       return args.action === "delete"
@@ -381,7 +409,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Manage Proxmox firewall rules. delete requires confirm: true.",
+      "Manage Proxmox firewall rules. add and delete require confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -399,10 +427,12 @@ export const TOOLS = {
       requireWhen("action", ["add"], ["rule"]),
       requireWhen("action", ["delete"], ["pos"]),
     ],
-    confirmationReason: (args) =>
-      args.action === "delete"
+    confirmationReason: (args) => {
+      if (args.action === "list") return null;
+      return args.action === "delete"
         ? "Deleting firewall rules is destructive."
-        : null,
+        : "A new firewall rule can lock everyone out (DROP) or open the host (ACCEPT).";
+    },
     run: dispatchByAction({
       list: (args, node) => proxmoxRequest("GET", firewallRulesPath(args, node)),
       add: (args, node) =>
@@ -421,7 +451,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Manage Proxmox network interfaces and VLANs. delete and apply require confirm: true.",
+      "Manage Proxmox network interfaces and VLANs. Everything except list requires confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -438,10 +468,12 @@ export const TOOLS = {
     requiredWhen: [requireWhen("action", ["create", "update", "delete"], ["iface"])],
     shellCommand: (args) =>
       args.action === "apply" ? NETWORK_RELOAD_COMMAND : null,
-    confirmationReason: (args) =>
-      ["delete", "apply"].includes(args.action)
+    confirmationReason: (args) => {
+      if (args.action === "list") return null;
+      return ["delete", "apply"].includes(args.action)
         ? `network_config ${args.action} can cut off connectivity.`
-        : null,
+        : `network_config ${args.action} stages a network change that the next apply makes live.`;
+    },
     run: dispatchByAction({
       list: (args, node) => proxmoxRequest("GET", `/nodes/${node}/network`),
       create: (args, node) =>
@@ -470,7 +502,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Manage Proxmox storage (NFS, SMB, ZFS, LVM). delete and zfs_create require confirm: true.",
+      "Manage Proxmox storage (NFS, SMB, ZFS, LVM). Everything except list and zfs_list requires confirm: true. zfs_create only creates a dataset.",
     inputSchema: {
       type: "object",
       properties: {
@@ -480,23 +512,31 @@ export const TOOLS = {
         },
         storage: NAME_SEGMENT,
         config: { type: "object" },
-        zfsCommand: {
+        dataset: {
           type: "string",
-          pattern: "^[^;&|`<>$()\\n\\r\\\\]*$",
-          description: "Arguments to zfs, e.g. create tank/data (no shell operators)",
+          // pool/child[/child...]: never an option, a snapshot or a bare pool.
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]*(/[A-Za-z0-9][A-Za-z0-9_.:-]*)+$",
+          description: "Dataset to create, e.g. tank/data",
         },
+        properties: {
+          type: "object",
+          description: "ZFS properties to set at creation, e.g. { \"compression\": \"lz4\" }",
+        },
+        parents: { type: "boolean", description: "Create missing parent datasets (zfs create -p)" },
       },
       required: ["action"],
     },
     requiredWhen: [
       requireWhen("action", ["add", "update", "delete"], ["storage"]),
-      requireWhen("action", ["zfs_create"], ["zfsCommand"]),
+      requireWhen("action", ["zfs_create"], ["dataset"]),
     ],
+    refusalReason: zfsPropertiesRefusal,
     shellCommand: zfsCommand,
-    confirmationReason: (args) =>
-      ["delete", "zfs_create"].includes(args.action)
-        ? `storage_config ${args.action} can destroy data.`
-        : null,
+    confirmationReason: (args) => {
+      if (["list", "zfs_list"].includes(args.action)) return null;
+      if (["delete", "zfs_create"].includes(args.action)) return `storage_config ${args.action} can destroy data.`;
+      return `storage_config ${args.action} changes storage, and can take it offline.`;
+    },
     run: dispatchByAction({
       list: () => proxmoxRequest("GET", "/storage"),
       add: (args) =>
@@ -520,7 +560,7 @@ export const TOOLS = {
       idempotentHint: true,
       openWorldHint: false,
     },
-    description: "Set VM/LXC startup order.",
+    description: "Set VM/LXC startup order. Requires confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -533,6 +573,7 @@ export const TOOLS = {
       },
       required: ["vmid", "order"],
     },
+    confirmationReason: () => "This overwrites the guest's startup order and turns on start at boot.",
     run: (args, node) => {
       const startup = startupSetting(args);
       return proxmoxRequest(
@@ -552,7 +593,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Create a backup of a VM or LXC. mode stop requires confirm: true.",
+      "Create a backup of a VM or LXC. Requires confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -565,7 +606,9 @@ export const TOOLS = {
       required: ["vmid"],
     },
     confirmationReason: (args) =>
-      args.mode === "stop" ? "Backup mode stop shuts the guest down." : null,
+      args.mode === "stop"
+        ? "Backup mode stop shuts the guest down."
+        : "A backup writes a new archive, which can fill the target storage.",
     run: (args, node) =>
       proxmoxRequest("POST", `/nodes/${node}/vzdump`, {
         vmid: args.vmid,

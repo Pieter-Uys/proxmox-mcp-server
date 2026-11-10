@@ -59,7 +59,7 @@ app.listen(CONFIG.server.port, () => {
   console.log(`Tools: ${TOOL_LIST.length}`);
   console.log(`Authentik: ${CONFIG.authentik.url}`);
   console.log(
-    `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} AUDIT_LOG=${SECURITY.auditLog} RATE_LIMIT_PER_MINUTE=${SECURITY.rateLimitPerMinute} VM_SSH_PASSWORD_AUTH=${SECURITY.vmSshPasswordAuth}`,
+    `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} TOOL_MODE=${SECURITY.toolMode} AUDIT_LOG=${SECURITY.auditLog} RATE_LIMIT_PER_MINUTE=${SECURITY.rateLimitPerMinute} VM_SSH_PASSWORD_AUTH=${SECURITY.vmSshPasswordAuth}`,
   );
   if (!CONFIG.ssh.hostKey && SECURITY.shellMode !== "off")
     console.warn(

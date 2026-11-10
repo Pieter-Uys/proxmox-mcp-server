@@ -43,7 +43,9 @@ Pin the host's own key so the server can't be talked into connecting to an impos
 ssh-keyscan your-proxmox-host | ssh-keygen -lf -
 ```
 
-and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). Without it the server warns at startup and accepts any key. If you only want API tools, set `SHELL_MODE=off`. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
+and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). Without it the server warns at startup and accepts any key.
+
+If you only want API tools, set `SHELL_MODE=off`. If you want the assistant to look but never change anything, set `TOOL_MODE=readonly`: every call that would need approval is refused. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
 
 `vm_ssh` logs in to VMs with the same key, so add the public key to each VM you want it to reach (`ssh-copy-id -i ./mcp_key.pub root@<vm-ip>`). Two settings limit it:
 

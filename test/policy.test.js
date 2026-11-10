@@ -302,7 +302,7 @@ test("readonly mode also covers tools that run shell commands indirectly", async
   await withShellMode("readonly", () => {
     assert.equal(getPolicyBlockReason(TOOLS.storage_config, { action: "zfs_list" }), null);
     assert.match(
-      getPolicyBlockReason(TOOLS.storage_config, { action: "zfs_create", zfsCommand: "create tank/x", confirm: true }),
+      getPolicyBlockReason(TOOLS.storage_config, { action: "zfs_create", dataset: "tank/x", confirm: true }),
       /SHELL_MODE=readonly/,
     );
     assert.match(
