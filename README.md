@@ -74,26 +74,40 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 
 | Layer | What it does |
 | --- | --- |
-| **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256, issuer, expiry). Opaque tokens are checked through Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash. |
-| **Confirmation** | Deletes, hard stops, network apply, ZFS commands, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Opaque tokens are checked through Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` optionally limits which signed-in users are accepted, checked on every request. |
+| **Confirmation** | Deletes, hard stops, network apply, ZFS commands, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` and similar), are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
+| **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address, inside `VM_SSH_ALLOWED_CIDRS` when set, and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on`. |
 | **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `zfsCommand`) are restricted to safe formats. |
 | **Rate limiting** | OAuth and MCP routes are limited per client IP (`RATE_LIMIT_PER_MINUTE`). Over-limit requests get HTTP 429. `/health` is not limited. |
-| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. Rotate it with logrotate or similar on the host. |
+| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. Community script calls also record the script URL and git ref. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0`. Rotate it with logrotate or similar on the host. |
 
 ### Modes
 
 | Setting | Values |
 | --- | --- |
 | `AUTH_MODE` | `enforce` (default), `log` (accept but record failures), `off` |
-| `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining), `off` |
+| `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths), `off` |
+| `VM_SSH_PASSWORD_AUTH` | `off` (default, `vm_ssh` uses the server's key only), `on` |
 
-The server refuses to start if either has an unrecognised value.
+The server refuses to start if any of these has an unrecognised value, or if `VM_SSH_ALLOWED_CIDRS` or `COMMUNITY_SCRIPTS_REF` is malformed.
 
 ### Things to know
 
 - **`confirm: true` is a speed bump, not a hard boundary.** The model sets it. It works alongside the client's own tool-approval prompts and the audit trail.
+- **Set `VM_SSH_ALLOWED_CIDRS`.** Without it `vm_ssh` can reach anything the server can route to, and the server warns about this at startup.
+- **Pin community scripts** with `COMMUNITY_SCRIPTS_REF` if you use `run_community_script`, or disable shell tools if you don't.
 - **CORS allows any origin** (`Access-Control-Allow-Origin: *`). This is deliberate: clients send a bearer token in the `Authorization` header and the server sets no cookies, so a page on another origin has no ambient credentials to abuse. If you only expect specific browser-based clients, tighten it in `server.js`.
+
+### Residual risks
+
+These hold even with every setting above in place:
+
+- **`confirm: true` is set by the model.** The server can't tell whether the user really approved the action. A prompt-injected model can set it. Rely on your client's own tool-approval prompts for anything that matters, and review the audit log.
+- **The read-only allowlist is best effort.** It is a parser for a small set of commands, not a sandbox. Symlinks, hard links, copies of secrets in unexpected places, or an option it doesn't know about can still expose data or change state without confirmation. `qm config` and `pct config` output can include secrets a user stored there. Use `SHELL_MODE=readonly` or `off` where that matters.
+- **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS, `network_config apply` and community scripts run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
+- **Community scripts are only partly pinned.** `COMMUNITY_SCRIPTS_REF` pins the top-level script, but upstream scripts load their helpers from `community-scripts/core` on `main`.
+- **`vm_ssh` doesn't verify host keys**, so a machine that can intercept traffic to a VM could impersonate it.
 
 ## Configuration
 
@@ -160,6 +174,10 @@ The suite covers:
 - which tool calls require `confirm: true`, and that only the boolean `true` counts
 - argument validation against the real tool schemas, including shell and path injection attempts
 - audit log redaction of secret-looking fields
+- sensitive-path reads (including `..` traversal and `/proc/*/root` paths) and the `smartctl` set forms behind `-l` and `-d`
+- `vm_ssh` IP validation, `VM_SSH_ALLOWED_CIDRS` and the password gate
+- JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS` and the token cache
+- community script URLs and their audit fields
 
 ## Project layout
 
@@ -167,6 +185,7 @@ The suite covers:
 server.js                 Entry point: Express setup, CORS, /health, rate limiter, routers
 src/
   config.js               Environment-driven CONFIG and SECURITY settings
+  cidr.js                 IP address checks and CIDR allowlists for vm_ssh
   constants.js            Timeouts, cache TTLs and limits
   tools.js                Every MCP tool (schema, confirmation rule, implementation) and callTool
   policy.js               SHELL_MODE enforcement and the read-only command allowlist
