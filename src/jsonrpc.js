@@ -5,6 +5,7 @@ import { rpcResult, rpcError, RPC_ERROR_CODES } from "./rpc.js";
 import { TOOL_LIST, callTool, findTool } from "./tools.js";
 import { validateArgs, checkRequiredWhen } from "./validate.js";
 import { forLog } from "./utils.js";
+import { SECURITY } from "./config.js";
 
 // ─── MCP JSON-RPC handler ───────────────────────────────────────────────────
 // `caller` is req.ctx from requireAuth: { ip, user }. Returns the response to
@@ -120,6 +121,11 @@ function checkToolCall(toolName, args) {
 }
 
 async function runTool(id, toolName, args, auditToolCall) {
+  // Recorded before running, so a call that hangs or crashes the server still
+  // leaves a trace, and a call whose record can't be written doesn't run.
+  const recorded = auditToolCall({ outcome: "started" });
+  if (!recorded && SECURITY.auditRequired === "true")
+    return toolErrorResult(id, "Refused: the audit log can't be written (AUDIT_REQUIRED=true). Fix AUDIT_LOG on the server.");
   const startedAt = Date.now();
   try {
     const result = await callTool(toolName, args);

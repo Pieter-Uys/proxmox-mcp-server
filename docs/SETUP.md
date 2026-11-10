@@ -7,7 +7,7 @@ This guide takes you from nothing to a working server. Allow about 30 minutes if
 | Requirement | Why |
 | --- | --- |
 | Proxmox VE host | The thing being managed |
-| Node.js 20.6 or newer, or Docker | To run the server |
+| Node.js 22 or newer, or Docker | To run the server |
 | [Authentik](https://goauthentik.io) | The server uses it as its OAuth login provider |
 | A public HTTPS address for the server | Claude's remote connectors must reach it over the internet. A Cloudflare Tunnel works well and needs no open ports |
 
@@ -15,25 +15,52 @@ The server is built around Authentik. Other OpenID providers are not supported. 
 
 ## 1. Create a Proxmox API token
 
-1. In the Proxmox web UI, go to **Datacenter, Permissions, API Tokens, Add**.
-2. Choose a user (for example `root@pam`, or a dedicated user) and a token name such as `mcp`.
-3. Decide on **Privilege Separation**. If it is ticked, the token has no permissions until you grant them under **Datacenter, Permissions, Add, API Token Permission**.
-4. Copy the secret when it is shown. It is displayed once.
+Use a dedicated Proxmox user, not `root@pam`, and give its token only the rights you need. Start read-only, then add rights as you decide which tools the assistant may use. On the Proxmox host:
 
-Your `PROXMOX_TOKEN_ID` is `user@realm!tokenname`, for example `root@pam!mcp`.
+```
+# A user in the Proxmox realm, with no shell login
+pveum user add mcp@pve --comment "MCP server"
 
-Permissions: for read-only use (`get_status` and GET calls through `proxmox_api`) the `PVEAuditor` role on path `/` is enough. The tools that create, stop, back up or reconfigure things need a role that can do those actions, for example `PVEAdmin`. Grant the minimum you need.
+# A privilege-separated token: it starts with no rights of its own
+pveum user token add mcp@pve mcp --privsep 1
+
+# Read-only: enough for get_status and GET calls through proxmox_api
+pveum acl modify / --tokens 'mcp@pve!mcp' --roles PVEAuditor
+```
+
+Copy the token secret when it is shown. It is displayed once. Your `PROXMOX_TOKEN_ID` is `mcp@pve!mcp`.
+
+To let the assistant act, add a custom role with just those privileges rather than `PVEAdmin`. For example, to start and stop guests and take backups:
+
+```
+pveum role add MCPOperator --privs "VM.Audit VM.PowerMgmt VM.Backup Datastore.Audit Datastore.AllocateSpace Sys.Audit"
+pveum acl modify / --tokens 'mcp@pve!mcp' --roles MCPOperator
+```
+
+Grant it on a narrower path (`/vms/101`, `/storage/local`) where you can. Using `root@pam` instead gives the assistant every right on the cluster; make that a deliberate choice, not the default.
 
 If Proxmox uses its own self-signed certificate, copy `/etc/pve/pve-root-ca.pem` to the server and set `PROXMOX_CA_CERT` to its path.
 
 ## 2. Give the server SSH access to the host
 
-The shell tools (`host_shell`, `lxc_shell`, `vm_ssh`, ZFS and `network_config apply`) run commands over SSH.
+The shell tools (`host_shell`, `lxc_shell`, `vm_ssh`, ZFS and `network_config apply`) run commands over SSH, as the SSH user, directly (the server does not use `sudo`). That user's own rights are the real limit on what they can do, so choose it first:
+
+- **No shell tools:** set `SHELL_MODE=off` and skip this step.
+- **Read-only checks only:** create a non-root user (for example `mcp`), add it to the `systemd-journal` and `adm` groups so it can read logs, and set `SHELL_MODE=readonly`. Commands like `uptime`, `df`, `journalctl` and `ss` work; `pct`, `qm`, `zfs` and anything under `/etc/pve` won't, which is the point.
+- **Full shell tools:** `pct exec`, `zfs`, `ifreload` and friends need root. Use `root` only if you want the assistant to have them, and keep `SHELL_MODE=full` so anything off the read-only list needs approval.
 
 ```
 ssh-keygen -t ed25519 -f ./mcp_key -N ""
-ssh-copy-id -i ./mcp_key.pub root@your-proxmox-host
+ssh-copy-id -i ./mcp_key.pub <user>@your-proxmox-host
 ```
+
+Then restrict the key on the host. In that user's `~/.ssh/authorized_keys`, put options in front of the key so it only works from the server's address and can't forward ports or open a terminal:
+
+```
+from="203.0.113.10",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... mcp
+```
+
+The server never requests a terminal, so `no-pty` costs nothing.
 
 Set `PROXMOX_SSH_KEY` to the private key's path and `PROXMOX_SSH_HOST` to the host.
 

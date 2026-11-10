@@ -141,6 +141,9 @@ export const SECURITY = {
   // whatever the model sends, for a look-but-don't-touch deployment.
   toolMode: (process.env.TOOL_MODE || "full").toLowerCase(),
   auditLog: process.env.AUDIT_LOG || "/var/log/proxmox-mcp/audit.jsonl",
+  // true (default): a tool call is refused if its audit entry can't be
+  // written, so nothing runs unrecorded. false: run anyway and log the failure.
+  auditRequired: (process.env.AUDIT_REQUIRED || "true").toLowerCase(),
   // Requests per client IP per minute across the OAuth and MCP routes. 0 disables.
   rateLimitPerMinute: parseNonNegativeInt("RATE_LIMIT_PER_MINUTE", "120"),
   // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
@@ -166,6 +169,7 @@ const ALLOWED_MODES = {
   AUTH_MODE: [SECURITY.authMode, ["enforce", "log", "off"]],
   SHELL_MODE: [SECURITY.shellMode, ["full", "readonly", "off"]],
   TOOL_MODE: [SECURITY.toolMode, ["full", "readonly"]],
+  AUDIT_REQUIRED: [SECURITY.auditRequired, ["true", "false"]],
   VM_SSH_PASSWORD_AUTH: [SECURITY.vmSshPasswordAuth, ["off", "on"]],
 };
 for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {

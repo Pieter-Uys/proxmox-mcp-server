@@ -17,10 +17,34 @@ ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=5
 LogsDirectory=proxmox-mcp
+
+# Sandboxing. The service only needs to read its code, write its audit log,
+# and open network connections (Proxmox API, SSH, Authentik).
 NoNewPrivileges=true
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/var/log/proxmox-mcp
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# AF_UNIX as well as IP: name resolution can go through a local socket
+# (systemd-resolved, nscd).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# MemoryDenyWriteExecute is left out on purpose: Node's V8 JIT needs memory
+# that is writable and executable, and the service would not start.
 
 [Install]
 WantedBy=multi-user.target

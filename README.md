@@ -1,7 +1,7 @@
 # Proxmox MCP Server
 
 [![CI](https://github.com/Pieter-Uys/proxmox-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Uys/proxmox-mcp-server/actions/workflows/ci.yml)
-![Node](https://img.shields.io/badge/node-%3E%3D20.6-339933?logo=node.js&logoColor=white)
+![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A remote [MCP](https://modelcontextprotocol.io) server that lets an AI assistant such as Claude manage a Proxmox VE host through tool calls.
@@ -25,7 +25,7 @@ A remote [MCP](https://modelcontextprotocol.io) server that lets an AI assistant
 
 ## Quick start
 
-Requires Node 20.6 or newer.
+Requires Node 22 or newer (CI tests 22, 24 and 26).
 
 ```bash
 git clone https://github.com/Pieter-Uys/proxmox-mcp-server.git
@@ -114,6 +114,17 @@ These hold even with every setting above in place:
 - **Community scripts are only partly pinned.** `COMMUNITY_SCRIPTS_REF` pins the top-level script, but upstream scripts load their helpers from `community-scripts/core` on `main`.
 - **`vm_ssh` only verifies a VM's host key when the call includes `hostKey`.** Without it, a machine that can intercept traffic to the VM could impersonate it. Set `PROXMOX_SSH_HOST_KEY` for the Proxmox host itself.
 
+### Protocol support
+
+The transport is written by hand rather than with the MCP SDK, so following new protocol revisions is upkeep that has to be done here. Current decisions:
+
+- **Versions:** `2025-03-26` and `2024-11-05` are negotiated. Batches are refused, as in `2025-06-18`.
+- **`Origin` header:** not checked. The spec asks for it against DNS rebinding, but every request here needs a bearer token in the `Authorization` header and there are no cookies, so a page that rebinds a name to this server has no credential to send.
+- **`MCP-Protocol-Version` header:** accepted but not required, so older clients keep working.
+- **RFC 8707 resource indicators:** not validated. `AUTHENTIK_AUDIENCE` ties tokens to this client instead.
+
+Revisit these when adding support for a newer revision.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (it is git-ignored) and fill it in.
@@ -162,6 +173,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `TOOL_MODE` | See [Modes](#modes) |
 | `SHELL_MODE` | See [Modes](#modes) |
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
+| `AUDIT_REQUIRED` | `true` (default): a tool call is refused if its audit entry can't be written, so nothing runs unrecorded. `false` runs it anyway and logs the failure |
 | `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
 | `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
@@ -175,7 +187,7 @@ The server will not start unless the variables marked **required** are set, so a
 npm test
 ```
 
-Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access. CI runs the suite and `npm audit` on every pull request and push to `main`.
+Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access (a few tests use servers on `127.0.0.1`). CI runs the suite on Node 22, 24 and 26, enforces a coverage floor, and runs `npm audit` on every pull request and push to `main`. Actions are pinned to commit SHAs and the Docker base image to a digest.
 
 The suite covers:
 
@@ -218,6 +230,7 @@ src/
     middleware.js         Body parsing, async handler wrapper, error handlers
 test/                     Unit tests (npm test)
 docs/SETUP.md             Step-by-step setup guide
+SECURITY.md               How to report a vulnerability
 deploy/                   systemd unit file
 Dockerfile                Container image
 ```
@@ -227,3 +240,5 @@ Dockerfile                Container image
 MIT. See [LICENSE](LICENSE).
 
 See [PRIVACY.md](PRIVACY.md) for what this server logs and where data goes.
+
+To report a security problem, see [SECURITY.md](SECURITY.md). Please don't open a public issue for it.

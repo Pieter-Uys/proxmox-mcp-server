@@ -219,11 +219,7 @@ test("jwt: malformed tokens are rejected", async () => {
   assert.equal(await reasonFor("a.b.c"), "malformed JWT");
 });
 
-// Mocking Date needs Node 20.11 or newer; package.json allows 20.6.
-const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-const canMockDate = nodeMajor > 20 || (nodeMajor === 20 && nodeMinor >= 11);
-
-test("cache: a verified token is never reused past its own exp", { skip: !canMockDate && "needs Node 20.11+ to mock Date" }, async (t) => {
+test("cache: a verified token is never reused past its own exp", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const exp = nowSeconds() + 60; // well inside the 5 minute cache TTL
   const token = signJwt(validClaims({ exp }));

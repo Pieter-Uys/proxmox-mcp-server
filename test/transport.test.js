@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import express from "express";
 import { mcpRouter } from "../src/routes/mcp.js";
 import { handleJsonRpc } from "../src/jsonrpc.js";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { SECURITY } from "../src/config.js";
+
+// These tests run tools, which write audit entries. Other test files check
+// the shared audit log's exact contents in parallel, so use a file of our own.
+SECURITY.auditLog = path.join(os.tmpdir(), "proxmox-mcp-test", `transport-${process.pid}.jsonl`);
 
 // A real Express app with the MCP router, on a loopback port. Auth is off for
 // these tests (they are about transport, not login), restored afterwards.
@@ -119,6 +126,41 @@ test("a malformed JSON body is logged without quoting any of it", async () => {
   }
   assert.doesNotMatch(lines.join("\n"), /hunter2-secret/);
   assert.match(lines.join("\n"), /malformed JSON body/);
+});
+
+// ─── L8: nothing runs unrecorded ────────────────────────────────────────────
+const failingToolCall = {
+  jsonrpc: "2.0",
+  id: 11,
+  method: "tools/call",
+  params: { name: "proxmox_api", arguments: { method: "GET", path: "/../../etc" } },
+};
+
+test("a started entry is written before the tool runs", async () => {
+  fs.rmSync(SECURITY.auditLog, { force: true });
+  await handleJsonRpc(failingToolCall);
+  const outcomes = fs.readFileSync(SECURITY.auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).outcome);
+  assert.deepEqual(outcomes, ["started", "error"]);
+});
+
+test("AUDIT_REQUIRED=true refuses to run a tool when the audit log can't be written", async () => {
+  const previous = { auditLog: SECURITY.auditLog, auditRequired: SECURITY.auditRequired };
+  SECURITY.auditLog = os.tmpdir(); // a directory: every append fails
+  try {
+    SECURITY.auditRequired = "true";
+    const refused = await handleJsonRpc(failingToolCall);
+    assert.equal(refused.result.isError, true);
+    assert.match(refused.result.content[0].text, /audit log can't be written/);
+    SECURITY.auditRequired = "false";
+    const ran = await handleJsonRpc(failingToolCall);
+    assert.match(ran.result.content[0].text, /Tool failed: Invalid Proxmox API path/, "with false it runs anyway");
+  } finally {
+    Object.assign(SECURITY, previous);
+  }
+});
+
+test("AUDIT_REQUIRED defaults to true", () => {
+  assert.equal(SECURITY.auditRequired, "true");
 });
 
 test("an unknown tool is a JSON-RPC Invalid params error, not a tool result", async () => {
