@@ -74,7 +74,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 
 | Layer | What it does |
 | --- | --- |
-| **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Opaque tokens are checked through Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` optionally limits which signed-in users are accepted, checked on every request. |
+| **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
 | **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
@@ -87,7 +87,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 
 | Setting | Values |
 | --- | --- |
-| `AUTH_MODE` | `enforce` (default), `log` (accept but record failures), `off` |
+| `AUTH_MODE` | `enforce` (default), `log` (accept but record failures), `off`. `log` and `off` need `ALLOW_INSECURE_AUTH=yes` and then listen on loopback only |
 | `TOOL_MODE` | `full` (default), `readonly` (refuses every call that would need `confirm: true`, whatever the model sends: a look-but-don't-touch deployment) |
 | `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths, no follow modes), `off` |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default, `vm_ssh` uses the server's key only), `on` |
@@ -146,10 +146,11 @@ The server will not start unless the variables marked **required** are set, so a
 | Variable | Notes |
 | --- | --- |
 | `MCP_PORT` | Port to listen on, default `3000` |
+| `MCP_BIND_ADDRESS` | IP address to listen on, default `0.0.0.0` (needed for Docker port publishing). With `AUTH_MODE` `log` or `off` it defaults to, and must be, `127.0.0.1` or `::1` |
 | `MCP_BASE_URL` | **Required.** Public HTTPS address of this server |
 | `AUTHENTIK_URL` | **Required.** Base URL of your Authentik instance |
 | `AUTHENTIK_APP_SLUG` | Authentik application slug, e.g. `proxmox-mcp` |
-| `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. When set, a JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Unset skips the check. Opaque tokens have no `aud` to check |
+| `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. When set, a JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Unset skips the check |
 
 **Security**
 
@@ -163,6 +164,8 @@ The server will not start unless the variables marked **required** are set, so a
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
 | `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
 | `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. A value that lists no entries (such as `,`) stops the server at startup. |
+| `ALLOWED_GROUPS` | Optional comma-separated Authentik group names (from the token's `groups` claim). Members are allowed. With both lists set, matching either is enough. |
+| `ALLOW_INSECURE_AUTH` | Must be `yes` for `AUTH_MODE=log` or `off` to start. Local testing only |
 
 ## Tests
 
@@ -183,7 +186,8 @@ The suite covers:
 - sensitive-path reads (including `..` traversal and `/proc/*/root` paths), recursive `grep` in its abbreviated forms (`--rec`, `-d rec`), `ps e` and the `smartctl` set forms behind `-l` and `-d`
 - `vm_ssh` IP validation, the private-range default, `VM_SSH_ALLOWED_CIDRS`, `hostKey` and the password gate
 - SSH host key pinning, the output cap and that a failing output handler can't crash the process
-- JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS` and the token cache
+- JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS`, `ALLOWED_GROUPS`, unusable JWKS keys, non-JWT tokens refused without a network call, and the token cache
+- `AUTH_MODE` `log`/`off` refusing to start without `ALLOW_INSECURE_AUTH=yes`, and binding to loopback
 - community script URLs and their audit fields
 
 ## Project layout

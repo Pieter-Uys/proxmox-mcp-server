@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { parseCidrList } from "./cidr.js";
+import { parseCidrList, ipVersion } from "./cidr.js";
 import { HOST_KEY_FINGERPRINT } from "./constants.js";
 
 // ─── Required settings ─────────────────────────────────────────────────────
@@ -149,6 +149,9 @@ export const SECURITY = {
   // Usernames, emails or subject ids allowed to use the server, or null for
   // anyone Authentik signs in. A second check after Authentik's own binding.
   allowedUsers: parseOptionalList("ALLOWED_USERS"),
+  // Authentik group names whose members may use the server. Either list
+  // matching is enough; with neither set, anyone Authentik signs in may.
+  allowedGroups: parseOptionalList("ALLOWED_GROUPS"),
   // Addresses vm_ssh may connect to, as a net.BlockList. Defaults to private
   // ranges, so it can't reach the internet unless that is configured.
   vmSshAllowedCidrs: parseCidrListSetting("VM_SSH_ALLOWED_CIDRS", PRIVATE_RANGES),
@@ -171,3 +174,31 @@ for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {
     process.exit(1);
   }
 }
+
+// ─── Listening address ──────────────────────────────────────────────────────
+// MCP_BIND_ADDRESS defaults to 0.0.0.0 so Docker's port publishing works.
+// AUTH_MODE=log or off lets anyone who reaches the port run tools as root on
+// the Proxmox host, so it needs an explicit ALLOW_INSECURE_AUTH=yes and then
+// listens on loopback only.
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
+
+function chooseBindAddress() {
+  const requested = process.env.MCP_BIND_ADDRESS?.trim() || undefined;
+  if (requested && !ipVersion(requested)) {
+    console.error(`MCP_BIND_ADDRESS must be an IP address, got "${requested}".`);
+    process.exit(1);
+  }
+  if (SECURITY.authMode === "enforce") return requested ?? "0.0.0.0";
+  if (process.env.ALLOW_INSECURE_AUTH !== "yes") {
+    console.error(
+      `AUTH_MODE=${SECURITY.authMode} accepts requests without a valid login. Set ALLOW_INSECURE_AUTH=yes to confirm this is a local test; the server then listens on 127.0.0.1 only.`,
+    );
+    process.exit(1);
+  }
+  if (requested && !LOOPBACK_ADDRESSES.has(requested)) {
+    console.error(`AUTH_MODE=${SECURITY.authMode} only listens on loopback, but MCP_BIND_ADDRESS is ${requested}.`);
+    process.exit(1);
+  }
+  return requested ?? "127.0.0.1";
+}
+CONFIG.server.bindAddress = chooseBindAddress();

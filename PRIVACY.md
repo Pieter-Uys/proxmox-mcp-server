@@ -6,7 +6,7 @@ Proxmox MCP Server is self-hosted software. It runs on your own infrastructure a
 
 - **Tool calls from your AI assistant.** Arguments are used to call your Proxmox VE API and, for shell-style tools, to run commands over SSH on your Proxmox host.
 - **Credentials you configure.** The Proxmox API token and SSH key stay on the server and are sent only to your configured Proxmox host. They are never written to logs.
-- **Sign-in data.** Bearer tokens are verified against your own Authentik instance. Verification results are cached in memory for up to 5 minutes, keyed by a hash of the token.
+- **Sign-in data.** Bearer tokens are verified locally against the signing keys of your own Authentik instance, fetched from its JWKS endpoint. Tokens are not sent to Authentik. Verification results are cached in memory for up to 5 minutes, keyed by a hash of the token.
 
 ## What the server logs
 

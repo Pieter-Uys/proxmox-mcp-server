@@ -52,16 +52,15 @@ test.beforeEach(() => {
   authTestHooks.setSigningKeys({ [KEY_ID]: publicKey });
 });
 
-// Stands in for Authentik's userinfo endpoint. Any other request fails the
-// test, so nothing here can reach the network.
-async function withUserinfo(claims, fn) {
+// Replaces fetch for the duration of fn. `respond(url)` returns the reply, or
+// throws to fail the test; the default fails on any request, so a test proves
+// it made none.
+async function withFetch(respond, fn) {
   const realFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url) => {
-    calls.push(url);
-    assert.equal(url, AUTHENTIK.userinfoUrl, "only userinfo may be fetched");
-    if (!claims) return { ok: false, status: 401, json: async () => ({}) };
-    return { ok: true, status: 200, json: async () => claims };
+    calls.push(String(url));
+    return respond(String(url));
   };
   try {
     return await fn(calls);
@@ -69,6 +68,7 @@ async function withUserinfo(claims, fn) {
     globalThis.fetch = realFetch;
   }
 }
+const noNetwork = (url) => assert.fail(`unexpected request to ${url}`);
 
 // ─── readBearerToken ────────────────────────────────────────────────────────
 
@@ -137,21 +137,6 @@ test("allowlist: a verified JWT user who isn't listed is rejected", async () => 
   });
 });
 
-test("allowlist: an opaque token user who isn't listed is rejected", async () => {
-  await withSettings(SECURITY, { allowedUsers: ["bob"] }, async () => {
-    await withUserinfo({ preferred_username: "alice", email: "alice@example.com", sub: "s1" }, async () => {
-      const result = await verify("opaque-token-value");
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, "user not allowed");
-    });
-  });
-  await withSettings(SECURITY, { allowedUsers: ["alice"] }, async () => {
-    await withUserinfo({ preferred_username: "alice" }, async () => {
-      assert.equal((await verify("another-opaque-token")).ok, true);
-    });
-  });
-});
-
 test("allowlist: also applies to tokens already in the verified-token cache", async () => {
   const token = signJwt(validClaims());
   await withSettings(SECURITY, { allowedUsers: null }, async () => {
@@ -162,18 +147,6 @@ test("allowlist: also applies to tokens already in the verified-token cache", as
     const result = await verify(token);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "user not allowed");
-  });
-});
-
-test("allowlist: cached opaque tokens are re-checked too", async () => {
-  await withUserinfo({ preferred_username: "alice" }, async (calls) => {
-    await withSettings(SECURITY, { allowedUsers: ["alice"] }, async () => {
-      assert.equal((await verify("opaque-cached")).ok, true);
-    });
-    await withSettings(SECURITY, { allowedUsers: ["bob"] }, async () => {
-      assert.equal((await verify("opaque-cached")).reason, "user not allowed");
-    });
-    assert.equal(calls.length, 1, "second check came from the cache");
   });
 });
 
@@ -265,13 +238,74 @@ test("cache: a verified token is never reused past its own exp", { skip: !canMoc
   assert.equal(await reasonFor(token), "token expired");
 });
 
-test("opaque: a userinfo rejection is reported, and a success is cached", async () => {
-  await withUserinfo(null, async () => {
-    assert.equal(await reasonFor("opaque-bad"), "opaque token, userinfo returned 401");
+
+// ─── Opaque tokens (audit M5) ───────────────────────────────────────────────
+// Authentik's access tokens are JWTs (only refresh tokens are opaque), so a
+// non-JWT bearer value is refused here without asking Authentik anything.
+test("opaque: a non-JWT token is rejected locally, with no request to Authentik", async () => {
+  await withFetch(noNetwork, async (calls) => {
+    for (const token of ["opaque-token-value", "a.b", "a.b.c.d", "x".repeat(64)]) {
+      assert.equal(await reasonFor(token), "not a JWT access token", token);
+    }
+    assert.equal(calls.length, 0);
   });
-  await withUserinfo({ preferred_username: "alice" }, async (calls) => {
-    assert.equal((await verify("opaque-good")).ok, true);
-    assert.equal((await verify("opaque-good")).cached, true);
-    assert.equal(calls.length, 1);
+});
+
+// ─── Group allowlist (audit M4) ─────────────────────────────────────────────
+test("groups: ALLOWED_GROUPS admits a member of a listed group", async () => {
+  await withSettings(SECURITY, { allowedUsers: null, allowedGroups: ["proxmox-admins"] }, async () => {
+    assert.equal((await verify(signJwt(validClaims({ groups: ["staff", "Proxmox-Admins"] })))).ok, true);
+    for (const groups of [["staff"], [], undefined, "proxmox-admins"]) {
+      authTestHooks.reset();
+      authTestHooks.setSigningKeys({ [KEY_ID]: publicKey });
+      assert.equal(await reasonFor(signJwt(validClaims({ groups }))), "user not allowed", JSON.stringify(groups));
+    }
   });
+});
+
+test("groups: with both lists set, a match on either admits the user", async () => {
+  await withSettings(SECURITY, { allowedUsers: ["bob"], allowedGroups: ["proxmox-admins"] }, async () => {
+    assert.equal((await verify(signJwt(validClaims({ preferred_username: "bob", groups: [] })))).ok, true);
+    assert.equal((await verify(signJwt(validClaims({ groups: ["proxmox-admins"] })))).ok, true);
+    assert.equal(await reasonFor(signJwt(validClaims({ groups: ["staff"] }))), "user not allowed");
+  });
+});
+
+test("groups: membership is re-checked for cached tokens", async () => {
+  const token = signJwt(validClaims({ groups: ["proxmox-admins"] }));
+  await withSettings(SECURITY, { allowedGroups: ["proxmox-admins"] }, async () => {
+    assert.equal((await verify(token)).ok, true);
+  });
+  await withSettings(SECURITY, { allowedGroups: ["other"] }, async () => {
+    const result = await verify(token);
+    assert.equal(result.reason, "user not allowed");
+  });
+});
+
+// ─── JWKS with keys this server can't use (audit M7) ────────────────────────
+test("jwks: unusable keys are skipped instead of breaking every login", async () => {
+  authTestHooks.reset(); // no keys installed, so the next check fetches the JWKS
+  const rsaJwk = { ...publicKey.export({ format: "jwk" }), kid: KEY_ID, use: "sig", alg: "RS256" };
+  const ecJwk = { ...crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({ format: "jwk" }), kid: "ec-key" };
+  const jwks = {
+    keys: [
+      { kty: "oct", kid: "hmac-key", k: "c2VjcmV0" },
+      { kty: "RSA", kid: "broken", n: "not base64!", e: "AQAB" },
+      ecJwk,
+      { kty: "RSA", kid: "enc-key", use: "enc", ...publicKey.export({ format: "jwk" }) },
+      rsaJwk,
+    ],
+  };
+  await withFetch(
+    (url) => {
+      assert.equal(url, AUTHENTIK.jwksUrl);
+      return { ok: true, status: 200, json: async () => jwks };
+    },
+    async (calls) => {
+      assert.equal((await verify(signJwt(validClaims()))).ok, true);
+      assert.equal(calls.length, 1);
+      assert.equal(await reasonFor(signJwt(validClaims(), { header: { kid: "ec-key" } })), "unknown signing key");
+      assert.equal(await reasonFor(signJwt(validClaims(), { header: { kid: "enc-key" } })), "unknown signing key");
+    },
+  );
 });
