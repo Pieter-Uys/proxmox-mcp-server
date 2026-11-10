@@ -1,8 +1,10 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TOOLS, TOOL_LIST, findTool, startupSetting } from "../src/tools.js";
+import { TOOLS, TOOL_LIST, findTool, startupSetting, callTool, communityScriptSource } from "../src/tools.js";
 import { getPolicyBlockReason } from "../src/policy.js";
+import { CONFIG, SECURITY } from "../src/config.js";
+import { parseCidrList } from "../src/cidr.js";
 import { validateArgs, checkRequiredWhen } from "../src/validate.js";
 
 const blocked = (tool, args) => getPolicyBlockReason(TOOLS[tool], args) !== null;
@@ -111,6 +113,128 @@ test("backup_vm: only mode stop needs confirmation", () => {
 test("run_community_script always needs confirmation", () => {
   assert.equal(blocked("run_community_script", { script: "pihole" }), true);
   assert.equal(blocked("run_community_script", { script: "pihole", confirm: true }), false);
+});
+
+// ─── vm_ssh scope and password handling ─────────────────────────────────────
+// Runs fn with SECURITY settings temporarily overridden, then restores them.
+async function withSecurity(overrides, fn) {
+  const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, SECURITY[key]]));
+  Object.assign(SECURITY, overrides);
+  try {
+    return await fn();
+  } finally {
+    Object.assign(SECURITY, previous);
+  }
+}
+const vmSshBlock = (args) => getPolicyBlockReason(TOOLS.vm_ssh, { command: "uptime", ...args });
+
+test("vm_ssh: only literal IP addresses are accepted, never host names", () => {
+  assert.equal(vmSshBlock({ ip: "10.0.0.5" }), null);
+  assert.equal(vmSshBlock({ ip: "fd00::5" }), null);
+  for (const ip of ["vm1.lan", "localhost", "pve.test", "10.0.0.5 ", "10.0.0.5;id", "fe80::1%eth0", ""]) {
+    assert.match(vmSshBlock({ ip, confirm: true }), /literal IPv4 or IPv6 address/, ip);
+  }
+});
+
+test("vm_ssh: VM_SSH_ALLOWED_CIDRS limits targets, and confirm can't override it", async () => {
+  await withSecurity({ vmSshAllowedCidrs: parseCidrList("192.168.10.0/24,fd00::/8") }, () => {
+    assert.equal(vmSshBlock({ ip: "192.168.10.20" }), null);
+    assert.equal(vmSshBlock({ ip: "fd00::20" }), null);
+    for (const ip of ["192.168.11.1", "10.0.0.5", "127.0.0.1", "169.254.169.254", "::1"]) {
+      assert.match(vmSshBlock({ ip, confirm: true }), /outside VM_SSH_ALLOWED_CIDRS/, ip);
+    }
+  });
+});
+
+test("vm_ssh: IPv4-mapped IPv6 addresses are matched against IPv4 ranges", async () => {
+  await withSecurity({ vmSshAllowedCidrs: parseCidrList("192.168.10.0/24") }, () => {
+    assert.equal(vmSshBlock({ ip: "::ffff:192.168.10.20" }), null);
+    // The mapped form can't be used to reach an address the IPv4 list leaves out.
+    for (const ip of ["::ffff:10.0.0.5", "::ffff:127.0.0.1"]) {
+      assert.match(vmSshBlock({ ip, confirm: true }), /outside VM_SSH_ALLOWED_CIDRS/, ip);
+    }
+  });
+});
+
+test("vm_ssh: the allowlist also applies in SHELL_MODE=readonly", async () => {
+  await withSecurity({ shellMode: "readonly", vmSshAllowedCidrs: parseCidrList("192.168.10.0/24") }, () => {
+    assert.match(vmSshBlock({ ip: "10.0.0.5" }), /outside VM_SSH_ALLOWED_CIDRS/);
+  });
+});
+
+test("vm_ssh: with no allowlist, any literal address is accepted (behaviour unchanged)", async () => {
+  await withSecurity({ vmSshAllowedCidrs: null }, () => {
+    assert.equal(vmSshBlock({ ip: "8.8.8.8" }), null);
+  });
+});
+
+test("vm_ssh: a password is refused unless VM_SSH_PASSWORD_AUTH=on", async () => {
+  await withSecurity({ vmSshPasswordAuth: "off" }, () => {
+    assert.match(vmSshBlock({ ip: "10.0.0.5", password: "hunter2" }), /VM_SSH_PASSWORD_AUTH=off/);
+    assert.match(vmSshBlock({ ip: "10.0.0.5", password: "", confirm: true }), /VM_SSH_PASSWORD_AUTH=off/);
+    assert.equal(vmSshBlock({ ip: "10.0.0.5" }), null);
+  });
+  await withSecurity({ vmSshPasswordAuth: "on" }, () => {
+    assert.equal(vmSshBlock({ ip: "10.0.0.5", password: "hunter2" }), null);
+  });
+});
+
+test("vm_ssh: password auth is off by default", () => {
+  assert.equal(SECURITY.vmSshPasswordAuth, "off");
+});
+
+test("vm_ssh: run() re-checks the limits, so a direct callTool can't skip them", async () => {
+  await assert.rejects(callTool("vm_ssh", { ip: "vm1.lan", command: "uptime" }), /literal IPv4 or IPv6/);
+  await assert.rejects(
+    callTool("vm_ssh", { ip: "10.0.0.5", command: "uptime", password: "x" }),
+    /VM_SSH_PASSWORD_AUTH=off/,
+  );
+});
+
+// ─── Community scripts: pinned ref ──────────────────────────────────────────
+const SCRIPTS_BASE = "https://raw.githubusercontent.com/community-scripts/ProxmoxVE";
+
+test("communityScriptSource uses main when no ref is pinned", () => {
+  assert.deepEqual(communityScriptSource("pihole", undefined), {
+    ref: "main",
+    pinned: false,
+    url: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
+  });
+});
+
+test("communityScriptSource uses the pinned commit or tag in place of main", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  assert.deepEqual(communityScriptSource("pihole", sha), {
+    ref: sha,
+    pinned: true,
+    url: `${SCRIPTS_BASE}/${sha}/ct/pihole.sh`,
+  });
+  assert.equal(communityScriptSource("nextcloud", "v2024.11.01").url, `${SCRIPTS_BASE}/v2024.11.01/ct/nextcloud.sh`);
+});
+
+test("run_community_script: the command and confirmation name the exact URL and ref", async () => {
+  const previous = CONFIG.communityScripts.ref;
+  try {
+    CONFIG.communityScripts.ref = undefined;
+    const tool = TOOLS.run_community_script;
+    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/main/ct/pihole.sh)"`);
+    const unpinned = getPolicyBlockReason(tool, { script: "pihole" });
+    assert.match(unpinned, new RegExp(`${SCRIPTS_BASE}/main/ct/pihole\\.sh`));
+    assert.match(unpinned, /unpinned branch.*COMMUNITY_SCRIPTS_REF/);
+    assert.deepEqual(tool.auditFields({ script: "pihole" }), {
+      scriptUrl: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
+      scriptRef: "main",
+      scriptPinned: false,
+    });
+
+    CONFIG.communityScripts.ref = "v1.2.3";
+    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/v1.2.3/ct/pihole.sh)"`);
+    const pinned = getPolicyBlockReason(tool, { script: "pihole" });
+    assert.match(pinned, /v1\.2\.3\/ct\/pihole\.sh.*pinned to ref v1\.2\.3/);
+    assert.equal(tool.auditFields({ script: "pihole" }).scriptPinned, true);
+  } finally {
+    CONFIG.communityScripts.ref = previous;
+  }
 });
 
 test("read-only tools never need confirmation", () => {

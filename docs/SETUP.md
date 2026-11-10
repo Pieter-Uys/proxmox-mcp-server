@@ -37,6 +37,11 @@ ssh-copy-id -i ./mcp_key.pub root@your-proxmox-host
 
 Set `PROXMOX_SSH_KEY` to the private key's path and `PROXMOX_SSH_HOST` to the host. If you only want API tools, set `SHELL_MODE=off`. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
 
+`vm_ssh` logs in to VMs with the same key, so add the public key to each VM you want it to reach (`ssh-copy-id -i ./mcp_key.pub root@<vm-ip>`). Two settings limit it:
+
+- `VM_SSH_ALLOWED_CIDRS`: the address ranges `vm_ssh` may connect to, for example `192.168.10.0/24`. Without it, `vm_ssh` can reach any address the server can route to, including your Proxmox host and other machines on the network, and the server logs a warning at startup.
+- `VM_SSH_PASSWORD_AUTH`: `off` by default, which means a `password` argument is refused. Passwords given to `vm_ssh` would pass through the model's context and the client's chat history, so use the key. Set `on` only if you accept that.
+
 ## 3. Set up Authentik
 
 In Authentik, create an **OAuth2/OpenID Provider** and an **Application** that uses it:
@@ -50,6 +55,11 @@ In Authentik, create an **OAuth2/OpenID Provider** and an **Application** that u
 
 Then bind the application to the users or groups allowed to use it.
 
+Two optional settings tighten this further:
+
+- `AUTHENTIK_AUDIENCE`: set it to the provider's client ID. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider.
+- `ALLOWED_USERS`: a comma-separated list of usernames, emails or subject IDs. It is a second check after the application binding, applied on every request. Usernames or subject IDs are the safer choice: depending on your Authentik flows, users may be able to change their own email address.
+
 ## 4. Configure the server
 
 ```
@@ -58,7 +68,17 @@ cp .env.example .env
 
 Fill in at least `PROXMOX_HOST`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_SSH_HOST`, `MCP_BASE_URL` (your public address) and `AUTHENTIK_URL`. The server refuses to start if any of them is missing. All settings are listed in the README.
 
-If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit.
+If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit. With it set, the audit log records the client IP from Cloudflare's `cf-connecting-ip` header. Behind a proxy other than Cloudflare, make sure the proxy removes any `cf-connecting-ip` header sent by clients.
+
+### Community scripts
+
+`run_community_script` downloads a script from [community-scripts/ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and runs it as root on the host. By default it fetches from the `main` branch, so what runs is whatever is on `main` at that moment. To pin it, pick a commit you have reviewed and set its SHA (or a release tag):
+
+```
+COMMUNITY_SCRIPTS_REF=0123456789abcdef0123456789abcdef01234567
+```
+
+The pin covers the top-level `ct/<name>.sh` script only. Those scripts load their shared helpers (`build.func` and what it pulls in) from the separate `community-scripts/core` repository, on its `main` branch, so a pin narrows what can change but doesn't freeze everything that runs. If you need that, set `SHELL_MODE=readonly` or `off` to disable the tool.
 
 ## 5. Run it
 

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { audit, redactSecrets } from "./audit.js";
 import { getPolicyBlockReason } from "./policy.js";
 import { rpcResult, rpcError, RPC_ERROR_CODES } from "./rpc.js";
@@ -18,6 +19,11 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   return METHODS[method](id, params, caller);
 }
 
+// The version clients see, read from package.json so it has one source.
+export const SERVER_VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
+
 // Newest first. Tool annotations were introduced in 2025-03-26.
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
 
@@ -34,7 +40,7 @@ const METHODS = {
     rpcResult(id, {
       protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
       capabilities: { tools: {} },
-      serverInfo: { name: "proxmox-mcp", version: "1.1.0" },
+      serverInfo: { name: "proxmox-mcp", version: SERVER_VERSION },
     }),
   "notifications/initialized": () => null,
   ping: (id) => rpcResult(id, {}),
@@ -47,6 +53,7 @@ const METHODS = {
 async function handleToolCall(id, params, caller) {
   const toolName = params?.name;
   const args = params?.arguments || {};
+  let toolFields = {};
   const auditToolCall = (outcomeFields) =>
     audit({
       event: "tool_call",
@@ -54,15 +61,27 @@ async function handleToolCall(id, params, caller) {
       ip: caller.ip,
       tool: toolName,
       args: redactSecrets(args),
+      ...toolFields,
       ...outcomeFields,
     });
 
   const refusal = checkToolCall(toolName, args);
+  // Only for arguments that passed validation: a tool's fields can assume
+  // well-formed input (a string script name, not an object).
+  if (refusal?.outcome !== "invalid") toolFields = toolAuditFields(toolName, args);
   if (refusal) {
     auditToolCall({ outcome: refusal.outcome, reason: refusal.reason });
     return toolErrorResult(id, refusal.message);
   }
   return runTool(id, toolName, args, auditToolCall);
+}
+
+// Extra audit fields a tool adds, e.g. which script URL a community script
+// call would run. Called only after the arguments are validated.
+export function toolAuditFields(toolName, args) {
+  const tool = findTool(toolName);
+  if (!tool?.auditFields || !args || typeof args !== "object") return {};
+  return redactSecrets(tool.auditFields(args));
 }
 
 // Returns why the server won't run this call, or null if it may run.
