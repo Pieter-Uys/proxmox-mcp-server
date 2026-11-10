@@ -11,7 +11,7 @@ This guide takes you from nothing to a working server. Allow about 30 minutes if
 | [Authentik](https://goauthentik.io) | The server uses it as its OAuth login provider |
 | A public HTTPS address for the server | Claude's remote connectors must reach it over the internet. A Cloudflare Tunnel works well and needs no open ports |
 
-The server is built around Authentik. Other OpenID providers are not supported. `AUTH_MODE=off` disables login entirely and is only suitable for local testing, never for a server reachable from the internet.
+The server is built around Authentik. Other OpenID providers are not supported. `AUTH_MODE=off` disables login entirely and is only suitable for local testing, never for a server reachable from the internet. The server refuses to start in `off` or `log` mode unless you also set `ALLOW_INSECURE_AUTH=yes`, and then listens on `127.0.0.1` only.
 
 ## 1. Create a Proxmox API token
 
@@ -71,6 +71,7 @@ Two optional settings tighten this further:
 
 - `AUTHENTIK_AUDIENCE`: set it to the provider's client ID. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider.
 - `ALLOWED_USERS`: a comma-separated list of usernames, emails or subject IDs. It is a second check after the application binding, applied on every request. Usernames or subject IDs are the safer choice: depending on your Authentik flows, users may be able to change their own email address.
+- `ALLOWED_GROUPS`: a comma-separated list of Authentik group names. Members of any of them are allowed. The names come from the token's `groups` claim, which Authentik's default `profile` scope mapping includes. With both lists set, a match on either is enough.
 
 ## 4. Configure the server
 

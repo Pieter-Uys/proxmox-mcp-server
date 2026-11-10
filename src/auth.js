@@ -9,7 +9,7 @@ import {
   JWKS_TTL_MS,
   JWKS_MIN_REFETCH_MS,
 } from "./constants.js";
-import { singleFlight } from "./utils.js";
+import { singleFlight, forLog } from "./utils.js";
 
 // ─── Express middleware ─────────────────────────────────────────────────────
 // Verifies the bearer token and sets req.ctx = { ip, user }. What happens to a
@@ -79,7 +79,7 @@ export async function verifyBearerToken(req) {
   if (!verification.ok) return verification;
   // Checked on every request, cache hits included, so the cache can never
   // let through a user the allowlist refuses.
-  if (!isUserAllowed(verification.identities))
+  if (!isUserAllowed(verification))
     return { ok: false, reason: "user not allowed", detail: verification.user };
   const { user, scope, cached } = verification;
   return { ok: true, user, scope, cached };
@@ -89,10 +89,13 @@ export async function verifyBearerToken(req) {
 async function verifyToken(token) {
   const cached = getCachedVerification(token);
   if (cached) return { ok: true, ...cached, cached: true };
+  // Authentik issues JWT access tokens; only its refresh tokens are opaque.
+  // Refusing anything else here means an unauthenticated caller can't make the
+  // server query Authentik's instance-wide userinfo endpoint, which would
+  // accept a token from any application with no issuer or audience check.
+  if (!looksLikeJwt(token)) return { ok: false, reason: "not a JWT access token" };
   try {
-    const verification = looksLikeJwt(token)
-      ? await verifyJwt(token)
-      : await verifyOpaqueToken(token);
+    const verification = await verifyJwt(token);
     if (!verification.ok) return verification;
     cacheVerification(token, verification);
     return { ...verification, cached: false };
@@ -103,12 +106,14 @@ async function verifyToken(token) {
   }
 }
 
-// ALLOWED_USERS unset means anyone Authentik signs in may use the server.
-// Otherwise one of the token's identities must be listed (case-insensitive).
-function isUserAllowed(identities) {
-  const allowed = SECURITY.allowedUsers;
-  if (!allowed) return true;
-  return identities.some((identity) => allowed.includes(identity.toLowerCase()));
+// With neither ALLOWED_USERS nor ALLOWED_GROUPS set, anyone Authentik signs in
+// may use the server. Otherwise one of the token's identities or groups must be
+// listed (case-insensitive); a match on either list is enough.
+function isUserAllowed({ identities, groups }) {
+  const { allowedUsers, allowedGroups } = SECURITY;
+  if (!allowedUsers && !allowedGroups) return true;
+  const listed = (allowed, values) => Boolean(allowed) && values.some((value) => allowed.includes(value.toLowerCase()));
+  return listed(allowedUsers, identities) || listed(allowedGroups, groups);
 }
 
 // Returns the token from "Authorization: Bearer <token>", or null. Plain string
@@ -136,14 +141,21 @@ function identitiesFromClaims(claims) {
   );
 }
 
+// Authentik's profile scope puts the user's group names in `groups`.
+function groupsFromClaims(claims) {
+  return Array.isArray(claims.groups)
+    ? claims.groups.filter((group) => typeof group === "string" && group !== "")
+    : [];
+}
+
 // ─── Verified-token cache ───────────────────────────────────────────────────
-const verifiedTokenCache = new Map(); // sha256(token) -> { user, identities, expiresAt }
+const verifiedTokenCache = new Map(); // sha256(token) -> { user, identities, groups, expiresAt }
 const cacheKeyFor = (token) => crypto.createHash("sha256").update(token).digest("hex");
 
 function getCachedVerification(token) {
   const entry = verifiedTokenCache.get(cacheKeyFor(token));
   if (!entry || entry.expiresAt <= Date.now()) return undefined;
-  return { user: entry.user, identities: entry.identities };
+  return { user: entry.user, identities: entry.identities, groups: entry.groups };
 }
 
 // Never past the token's own expiry, and capped so long-lived JWTs are still
@@ -153,24 +165,9 @@ function cacheVerification(token, verification) {
   verifiedTokenCache.set(cacheKeyFor(token), {
     user: verification.user,
     identities: verification.identities,
+    groups: verification.groups,
     expiresAt: Math.min(verification.expiresAt, Date.now() + TOKEN_CACHE_TTL_MS),
   });
-}
-
-// ─── Opaque tokens: only Authentik can check them ───────────────────────────
-async function verifyOpaqueToken(token) {
-  const response = await authentikFetch(AUTHENTIK.userinfoUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok)
-    return { ok: false, reason: `opaque token, userinfo returned ${response.status}` };
-  const claims = await response.json();
-  return {
-    ok: true,
-    user: usernameFromClaims(claims),
-    identities: identitiesFromClaims(claims),
-    expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
-  };
 }
 
 // ─── JWTs: verified locally against Authentik's signing keys ────────────────
@@ -184,6 +181,7 @@ async function verifyJwt(token) {
     ok: true,
     user: usernameFromClaims(jwt.claims),
     identities: identitiesFromClaims(jwt.claims),
+    groups: groupsFromClaims(jwt.claims),
     scope: jwt.claims.scope,
     expiresAt: jwt.claims.exp * 1000,
   };
@@ -272,11 +270,22 @@ const refreshJwks = singleFlight(async () => {
   const response = await authentikFetch(AUTHENTIK.jwksUrl);
   if (!response.ok) throw new Error(`jwks fetch ${response.status}`);
   const { keys = [] } = await response.json();
-  jwks.keysById = new Map(
-    keys.map((jwk) => [jwk.kid, crypto.createPublicKey({ key: jwk, format: "jwk" })]),
-  );
+  jwks.keysById = new Map(keys.flatMap(usableSigningKey));
   jwks.fetchedAt = Date.now();
 });
+
+// [[kid, KeyObject]] for an RSA signing key, or [] for anything else. One key
+// this server can't use (EC, symmetric, encryption-only, malformed) must not
+// make the whole refresh throw, which would fail every login.
+function usableSigningKey(jwk) {
+  if (jwk?.kty !== "RSA" || (jwk.use !== undefined && jwk.use !== "sig")) return [];
+  try {
+    return [[jwk.kid, crypto.createPublicKey({ key: jwk, format: "jwk" })]];
+  } catch (error) {
+    console.warn(`Skipping unusable JWKS key ${forLog(jwk.kid)}: ${error.message}`);
+    return [];
+  }
+}
 
 // ─── Test-only hooks ────────────────────────────────────────────────────────
 // TEST ONLY. Not used by the server. Lets the tests verify real signed JWTs

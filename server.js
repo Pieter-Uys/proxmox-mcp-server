@@ -54,8 +54,19 @@ app.use((req, res) => res.status(404).json({ error: "not_found" }));
 // Each router formats its own errors; this catches anything outside them.
 app.use(fallbackErrorHandler);
 
-app.listen(CONFIG.server.port, () => {
-  console.log(`Proxmox MCP running on :${CONFIG.server.port}`);
+app.listen(CONFIG.server.port, CONFIG.server.bindAddress, () => {
+  console.log(`Proxmox MCP running on ${CONFIG.server.bindAddress}:${CONFIG.server.port}`);
+  if (SECURITY.authMode !== "enforce")
+    console.warn(
+      [
+        "",
+        "!!! WARNING: AUTH_MODE=" + SECURITY.authMode + " !!!",
+        "Requests are accepted without a valid login. Anyone who can reach",
+        `${CONFIG.server.bindAddress}:${CONFIG.server.port} can run tools as root on the Proxmox host.`,
+        "Use this for local testing only, and set AUTH_MODE=enforce before exposing the server.",
+        "",
+      ].join("\n"),
+    );
   console.log(`Tools: ${TOOL_LIST.length}`);
   console.log(`Authentik: ${CONFIG.authentik.url}`);
   console.log(
