@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { audit, redactSecrets } from "./audit.js";
 import { getPolicyBlockReason } from "./policy.js";
 import { rpcResult, rpcError, RPC_ERROR_CODES } from "./rpc.js";
@@ -18,6 +19,11 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   return METHODS[method](id, params, caller);
 }
 
+// The version clients see, read from package.json so it has one source.
+export const SERVER_VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
+
 // Newest first. Tool annotations were introduced in 2025-03-26.
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
 
@@ -34,7 +40,7 @@ const METHODS = {
     rpcResult(id, {
       protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
       capabilities: { tools: {} },
-      serverInfo: { name: "proxmox-mcp", version: "1.1.0" },
+      serverInfo: { name: "proxmox-mcp", version: SERVER_VERSION },
     }),
   "notifications/initialized": () => null,
   ping: (id) => rpcResult(id, {}),
