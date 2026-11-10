@@ -61,8 +61,8 @@ app.listen(CONFIG.server.port, () => {
   console.log(
     `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} AUDIT_LOG=${SECURITY.auditLog} RATE_LIMIT_PER_MINUTE=${SECURITY.rateLimitPerMinute} VM_SSH_PASSWORD_AUTH=${SECURITY.vmSshPasswordAuth}`,
   );
-  if (!SECURITY.vmSshAllowedCidrs && SECURITY.shellMode !== "off")
+  if (!CONFIG.ssh.hostKey && SECURITY.shellMode !== "off")
     console.warn(
-      "WARNING: VM_SSH_ALLOWED_CIDRS is not set, so vm_ssh can connect to any address this server can reach. Set it to your VM subnets.",
+      "WARNING: PROXMOX_SSH_HOST_KEY is not set, so the Proxmox host's SSH key is not checked. Set it to the fingerprint from: ssh-keyscan <host> | ssh-keygen -lf -",
     );
 });

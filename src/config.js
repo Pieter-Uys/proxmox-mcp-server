@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { parseCidrList } from "./cidr.js";
+import { HOST_KEY_FINGERPRINT } from "./constants.js";
 
 // ─── Required settings ─────────────────────────────────────────────────────
 // Settings that point at real infrastructure have no defaults. If one is
@@ -28,6 +29,18 @@ function parseNonNegativeInt(name, fallback) {
     process.exit(1);
   }
   return Number(raw);
+}
+
+// Reads an optional SSH host key fingerprint ("SHA256:..."). A malformed one
+// refuses to start, since ignoring it would silently turn pinning off.
+function parseOptionalHostKey(name) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  if (!HOST_KEY_FINGERPRINT.test(raw)) {
+    console.error(`${name} must be an OpenSSH SHA256 fingerprint (SHA256:...), got "${raw}".`);
+    process.exit(1);
+  }
+  return raw;
 }
 
 // Reads an optional git ref (commit SHA or tag). It ends up in a shell command
@@ -59,11 +72,13 @@ function parseOptionalList(name) {
   return entries;
 }
 
-// Reads an optional comma-separated CIDR list, or null when unset. Refuses to
+// Private address ranges: RFC 1918 for IPv4 and unique local fc00::/7 for IPv6.
+const PRIVATE_RANGES = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7";
+
+// Reads a comma-separated CIDR list, or `fallback` when unset. Refuses to
 // start on a malformed entry, since dropping it would change who is reachable.
-function parseOptionalCidrList(name) {
-  const raw = process.env[name];
-  if (!raw?.trim()) return null;
+function parseCidrListSetting(name, fallback) {
+  const raw = process.env[name]?.trim() ? process.env[name] : fallback;
   try {
     return parseCidrList(raw);
   } catch (error) {
@@ -93,6 +108,9 @@ export const CONFIG = {
     privateKey: process.env.PROXMOX_SSH_KEY
       ? fs.readFileSync(process.env.PROXMOX_SSH_KEY)
       : undefined,
+    // SHA256 fingerprint of the Proxmox host's SSH key. When set, a host that
+    // presents any other key is refused before authenticating.
+    hostKey: parseOptionalHostKey("PROXMOX_SSH_HOST_KEY"),
   },
   server: {
     port: Number.parseInt(process.env.MCP_PORT || "3000", 10),
@@ -128,9 +146,9 @@ export const SECURITY = {
   // Usernames, emails or subject ids allowed to use the server, or null for
   // anyone Authentik signs in. A second check after Authentik's own binding.
   allowedUsers: parseOptionalList("ALLOWED_USERS"),
-  // Addresses vm_ssh may connect to, as a net.BlockList, or null for any
-  // address (server.js warns at startup when it is unset).
-  vmSshAllowedCidrs: parseOptionalCidrList("VM_SSH_ALLOWED_CIDRS"),
+  // Addresses vm_ssh may connect to, as a net.BlockList. Defaults to private
+  // ranges, so it can't reach the internet unless that is configured.
+  vmSshAllowedCidrs: parseCidrListSetting("VM_SSH_ALLOWED_CIDRS", PRIVATE_RANGES),
   // off (default): vm_ssh refuses a password argument and uses the configured
   // key, so passwords never pass through the model's context. on: allowed.
   vmSshPasswordAuth: (process.env.VM_SSH_PASSWORD_AUTH || "off").toLowerCase(),
