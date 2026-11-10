@@ -59,9 +59,10 @@ function zfsCommand(args) {
   if (args.action === "zfs_list") return "zfs list";
   if (args.action !== "zfs_create") return null;
   const parents = args.parents ? ["-p"] : [];
-  const properties = Object.entries(args.properties ?? {}).map(
-    ([name, value]) => `-o ${shellQuote(`${name}=${value}`)}`,
-  );
+  const properties = Object.entries(args.properties ?? {}).map(([name, value]) => {
+    const assignment = `${name}=${value}`;
+    return `-o ${shellQuote(assignment)}`;
+  });
   return ["zfs create", ...parents, ...properties, shellQuote(args.dataset)].join(" ");
 }
 
