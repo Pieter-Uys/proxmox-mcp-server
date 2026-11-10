@@ -211,14 +211,145 @@ const isLongOptionPrefix = (name, option) => name.length > 2 && option.startsWit
 const isRecurseValue = (value) => typeof value === "string" && value !== "" && "recurse".startsWith(value);
 
 const anyArgs = () => true;
-const firstArgIn = (...allowed) => (args) => allowed.includes(args[0]);
 const onlyArgsIn = (...allowed) => (args) => args.every((arg) => allowed.includes(arg));
-const noArgIn = (...forbidden) => (args) => !args.some((arg) => forbidden.includes(arg));
-// True if a short-option cluster such as `-tlnK` contains `letter`.
-const hasShortOption = (args, letter) =>
-  args.some((arg) => /^-[A-Za-z]+$/.test(arg) && arg.includes(letter));
-const hasLongOption = (args, name) =>
-  args.some((arg) => arg === name || arg.startsWith(`${name}=`));
+
+// ─── Exact option allowlists ────────────────────────────────────────────────
+// A denylist of bad options fails the same way a denylist of bad commands
+// does: `ss -D FILE` overwrites a file, and GNU getopt accepts any unambiguous
+// abbreviation, so `ss --kil` and `journalctl --rot` slipped past rules that
+// named --kill and --rotate. These commands instead list every option they
+// accept, by exact name, and anything else is refused.
+//
+// spec fields, all optional:
+//   flags        short letters that take no value, alone or clustered (-tlnp)
+//   valued       short letters that take a value: the rest of the word
+//                (-n50) or the next word (-n 50)
+//   long         long options that take no value (--no-pager)
+//   longValued   long options that take a value (--unit=x or --unit x)
+//   longOptional long options with an optional attached value (--boot, --boot=-1)
+//   numeric      also accept -NUMBER words (tail -100, journalctl -b -1)
+//   positional   check for each word that is not an option or a value
+function optionsMatch(args, spec) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg.startsWith("--")) {
+      const [name, attachedValue] = splitLongOption(arg);
+      if (spec.long?.includes(name) && attachedValue === undefined) continue;
+      if (spec.longOptional?.includes(name)) continue;
+      if (!spec.longValued?.includes(name)) return false;
+      if (attachedValue === undefined && ++index >= args.length) return false;
+      continue;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (spec.numeric && /^-\d+$/.test(arg)) continue;
+      const consumesNext = shortClusterTakesNextWord(arg, spec);
+      if (consumesNext === null) return false;
+      if (consumesNext && ++index >= args.length) return false;
+      continue;
+    }
+    if (spec.positional && !spec.positional(arg)) return false;
+  }
+  return true;
+}
+
+// For a cluster like -tlnp or -n50: null if a letter isn't allowed, true if the
+// cluster ends in a valued letter whose value is the next word, otherwise false.
+function shortClusterTakesNextWord(arg, spec) {
+  for (let position = 1; position < arg.length; position++) {
+    const letter = arg[position];
+    if (spec.valued?.includes(letter)) return position === arg.length - 1;
+    if (!spec.flags?.includes(letter)) return null;
+  }
+  return false;
+}
+
+// For tools whose first word is a subcommand: the subcommand must be listed,
+// and its remaining words must match that subcommand's spec.
+const subcommands = (specs) => ([subcommand, ...rest]) =>
+  Object.hasOwn(specs, subcommand) && optionsMatch(rest, specs[subcommand]);
+
+const isVmid = (word) => /^\d+$/.test(word);
+const isNotNumber = (word) => !/^\d+$/.test(word); // a bare number is a repeat interval for zpool
+
+// ss: -K kills sockets, -D/--diag writes a raw dump to a file, -F reads a
+// filter file, -N switches network namespace, -E streams events forever.
+const SS_SPEC = {
+  flags: "tulnpaemiosxw46rHOZzSdb0T",
+  valued: "Af",
+  long: [
+    "--tcp", "--udp", "--listening", "--numeric", "--processes", "--all", "--extended",
+    "--memory", "--info", "--options", "--summary", "--unix", "--raw", "--ipv4", "--ipv6",
+    "--resolve", "--no-header", "--oneline", "--context", "--contexts", "--sctp", "--dccp",
+    "--packet", "--threads",
+  ],
+  longValued: ["--query", "--socket", "--family"],
+};
+
+// journalctl: no maintenance (--rotate, --vacuum-*, --flush, --sync,
+// --setup-keys, ...) and no -f/--follow, which would hold the SSH session open
+// until the timeout. -D and --file are left out: they read arbitrary paths.
+const JOURNALCTL_SPEC = {
+  flags: "krxeaqlbmN",
+  valued: "unpSUotgFc",
+  long: [
+    "--no-pager", "--reverse", "--dmesg", "--all", "--quiet", "--full", "--no-full", "--utc",
+    "--no-hostname", "--list-boots", "--disk-usage", "--system", "--merge", "--catalog",
+    "--pager-end", "--fields",
+  ],
+  longValued: [
+    "--unit", "--lines", "--priority", "--since", "--until", "--output", "--identifier",
+    "--grep", "--field", "--cursor", "--after-cursor", "--facility",
+  ],
+  longOptional: ["--boot"],
+  numeric: true,
+};
+
+// sensors: -s/--set applies limits; -c reads an arbitrary config file.
+const SENSORS_SPEC = { flags: "ujfAv", long: ["--fahrenheit", "--no-adapter"] };
+
+// systemctl: only these subcommands, and no -H/--host or -M/--machine (they
+// reach other machines) or --root.
+const SYSTEMCTL_OPTIONS = {
+  flags: "laq",
+  valued: "tnop",
+  long: ["--no-pager", "--full", "--all", "--plain", "--no-legend", "--quiet", "--failed", "--no-ask-password"],
+  longValued: ["--type", "--state", "--lines", "--output", "--property"],
+};
+
+// tail: no -f/-F/--follow/--retry/-s, which only make sense while following.
+const TAIL_SPEC = {
+  flags: "qvz",
+  valued: "nc",
+  long: ["--quiet", "--silent", "--verbose", "--zero-terminated"],
+  longValued: ["--lines", "--bytes"],
+  numeric: true,
+};
+
+// find: every predicate is named, with whether it takes a value. Anything that
+// runs, deletes or writes (-exec, -delete, -fprint, -fls, ...) is absent.
+const FIND_PREDICATES = new Map([
+  ...["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
+    "-type", "-xtype", "-maxdepth", "-mindepth", "-mtime", "-mmin", "-atime", "-amin",
+    "-ctime", "-cmin", "-size", "-newer", "-user", "-group", "-uid", "-gid", "-perm",
+    "-links", "-inum", "-samefile", "-printf", "-fstype"].map((name) => [name, 1]),
+  ...["-print", "-print0", "-ls", "-empty", "-xdev", "-mount", "-o", "-a", "-or", "-and",
+    "-not", "-prune", "-nouser", "-nogroup", "-readable", "-writable", "-executable",
+    "-true", "-false", "-H", "-L", "-P", "-follow", "-daystart", "-depth", "-quit"].map((name) => [name, 0]),
+]);
+
+function isReadonlyFind(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (!arg.startsWith("-")) continue; // a starting path
+    if (!FIND_PREDICATES.has(arg)) return false;
+    index += FIND_PREDICATES.get(arg); // a value may itself start with - (-mtime -7)
+    if (index >= args.length) return false;
+  }
+  return true;
+}
+
+// Proxmox CLI boolean options may be given bare (--current) or with =value.
+const pveBooleans = (...names) => ({ longOptional: names });
 
 // ─── smartctl ───────────────────────────────────────────────────────────────
 // smartctl mixes read and write forms behind the same options: `-l scterc`
@@ -308,7 +439,6 @@ const READONLY_COMMANDS = {
   ls: anyArgs,
   cat: anyArgs,
   head: anyArgs,
-  tail: anyArgs,
   grep: anyArgs,
   wc: anyArgs,
   stat: anyArgs,
@@ -325,23 +455,37 @@ const READONLY_COMMANDS = {
   // Readers that also have state-changing forms, which are refused.
   hostname: onlyArgsIn("-I", "-i", "-f", "-s", "-d", "-A", "-a", "--fqdn", "--short"), // a name argument sets it
   date: (args) => args.every((arg) => arg.startsWith("+") || ["-u", "--utc", "-R", "-I"].includes(arg)), // -s / MMDDhhmm set the clock
-  find: noArgIn("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"),
-  journalctl: (args) =>
-    !args.some((arg) =>
-      /^--(vacuum|rotate|flush|sync|relinquish-var|smart-relinquish-var|setup-keys|update-catalog)/.test(arg),
-    ),
-  ss: (args) => !hasShortOption(args, "K") && !hasLongOption(args, "--kill"), // -K kills sockets
-  sensors: (args) => !hasShortOption(args, "s") && !hasLongOption(args, "--set"),
+  // These list every option they accept (see "Exact option allowlists").
+  tail: (args) => optionsMatch(args, TAIL_SPEC),
+  find: isReadonlyFind,
+  journalctl: (args) => optionsMatch(args, JOURNALCTL_SPEC),
+  ss: (args) => optionsMatch(args, SS_SPEC),
+  sensors: (args) => optionsMatch(args, SENSORS_SPEC),
   smartctl: isReadonlySmartctl,
   ip: (args) =>
     ["a", "addr", "address", "r", "route", "link"].includes(args[0]) &&
     (args.length === 1 || ["show", "list", "ls", "sh"].includes(args[1])),
 
-  // Tools whose read-only subcommands are allowed.
-  zfs: firstArgIn("list"),
-  zpool: firstArgIn("status", "list"),
-  pvesm: firstArgIn("status"),
-  qm: firstArgIn("list", "config", "status"),
-  pct: firstArgIn("list", "config", "status"),
-  systemctl: firstArgIn("status", "list-units", "is-active"),
+  // Tools whose read-only subcommands are allowed, each with its own options.
+  zfs: subcommands({ list: { flags: "rHp", valued: "otsSd" } }),
+  zpool: subcommands({
+    status: { flags: "xvPLpgD", positional: isNotNumber },
+    list: { flags: "HpPvgL", valued: "o", positional: isNotNumber },
+  }),
+  pvesm: subcommands({ status: { longValued: ["--storage", "--content", "--enabled", "--format", "--target"] } }),
+  qm: subcommands({
+    list: { longValued: ["--full"] },
+    config: { ...pveBooleans("--current"), longValued: ["--snapshot"], positional: isVmid },
+    status: { ...pveBooleans("--verbose"), positional: isVmid },
+  }),
+  pct: subcommands({
+    list: {},
+    config: { ...pveBooleans("--current"), longValued: ["--snapshot"], positional: isVmid },
+    status: { ...pveBooleans("--verbose"), positional: isVmid },
+  }),
+  systemctl: subcommands({
+    status: SYSTEMCTL_OPTIONS,
+    "list-units": SYSTEMCTL_OPTIONS,
+    "is-active": SYSTEMCTL_OPTIONS,
+  }),
 };

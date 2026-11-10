@@ -87,7 +87,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Setting | Values |
 | --- | --- |
 | `AUTH_MODE` | `enforce` (default), `log` (accept but record failures), `off` |
-| `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths), `off` |
+| `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths, no follow modes), `off` |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default, `vm_ssh` uses the server's key only), `on` |
 
 The server refuses to start if any of these has an unrecognised value, or if `VM_SSH_ALLOWED_CIDRS` or `COMMUNITY_SCRIPTS_REF` is malformed.
@@ -104,6 +104,7 @@ The server refuses to start if any of these has an unrecognised value, or if `VM
 These hold even with every setting above in place:
 
 - **`confirm: true` is set by the model.** The server can't tell whether the user really approved the action. A prompt-injected model can set it. Rely on your client's own tool-approval prompts for anything that matters, and review the audit log.
+- **Read-only means "does not change the host", not "safe to show the model".** Commands on the allowlist run as the SSH user, usually root, and print what they read. The sensitive-path check covers known secret locations; the SSH user's own file permissions are the real limit.
 - **The read-only allowlist is best effort.** It is a parser for a small set of commands, not a sandbox. Symlinks, hard links, copies of secrets in unexpected places, or an option it doesn't know about can still expose data or change state without confirmation. `qm config` and `pct config` output can include secrets a user stored there. Use `SHELL_MODE=readonly` or `off` where that matters.
 - **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS, `network_config apply` and community scripts run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
 - **Community scripts are only partly pinned.** `COMMUNITY_SCRIPTS_REF` pins the top-level script, but upstream scripts load their helpers from `community-scripts/core` on `main`.
@@ -169,7 +170,7 @@ Uses Node's built-in test runner, with no extra dependencies and no network or P
 
 The suite covers:
 
-- the read-only shell allowlist, including the cases it must refuse (chaining, redirects, substitution, `date -s`, `find -delete`, `ss -K`, `ip link set` and so on)
+- the read-only shell allowlist, including the cases it must refuse (chaining, redirects, substitution, `date -s`, `find -delete`, `ss -K`, `ss -D`, abbreviated long options such as `ss --kil` and `journalctl --rot`, `systemctl --host`, `tail -f`, `ip link set` and so on)
 - `SHELL_MODE` enforcement across `full`, `readonly` and `off`, including tools that run shell commands indirectly
 - which tool calls require `confirm: true`, and that only the boolean `true` counts
 - argument validation against the real tool schemas, including shell and path injection attempts
