@@ -58,14 +58,23 @@ function chooseCredentials(target) {
 
 export function hostKeyFingerprint(rawKey) {
   const digest = crypto.createHash("sha256").update(rawKey).digest("base64");
-  return `SHA256:${digest.replace(/=+$/, "")}`;
+  return `SHA256:${stripBase64Padding(digest)}`;
+}
+
+// Drops trailing "=" with a plain loop. /=+$/ backtracks quadratically on a
+// long run of "=" that isn't at the end, and the fingerprint comes from config
+// or a tool argument.
+function stripBase64Padding(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "=") end--;
+  return text.slice(0, end);
 }
 
 // Returns ssh2's hostVerifier: true only for a key with exactly this
 // fingerprint. ssh2 aborts the connection before authenticating on false, so a
 // password or key signature never reaches the wrong host.
 export function createHostVerifier(expectedFingerprint) {
-  const expected = Buffer.from(expectedFingerprint.replace(/=+$/, ""));
+  const expected = Buffer.from(stripBase64Padding(expectedFingerprint));
   return (rawKey) => {
     const actual = Buffer.from(hostKeyFingerprint(rawKey));
     return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
@@ -96,6 +105,8 @@ function runCommand(connection, command) {
 // Collects a channel's stdout and stderr, at most `maxBytes` across both. Past
 // that the channel is closed and the result is marked truncated, so output
 // such as `cat /dev/zero` can't exhaust memory or hit V8's string limit.
+// Closing the channel doesn't signal the remote process: one that never
+// writes again, or ignores SIGPIPE, keeps running, and the result says so.
 // Exported for tests, which pass a fake stream.
 export function collectOutput(stream, maxBytes = SSH_MAX_OUTPUT_BYTES) {
   return new Promise((resolve, reject) => {
@@ -164,7 +175,7 @@ export function shellQuote(value) {
 
 export function formatCommandResult(result) {
   const truncationNote = result.truncated
-    ? `\n[output truncated at ${SSH_MAX_OUTPUT_BYTES} bytes; the command was stopped and this output is incomplete]`
+    ? `\n[output truncated at ${SSH_MAX_OUTPUT_BYTES} bytes; the channel was closed and this output is incomplete. The command may still be running on the host; check its state before retrying]`
     : "";
   const stderr = result.stderr ? "\nSTDERR:\n" + result.stderr : "";
   return `Exit: ${describeExit(result)}\n${result.stdout}${stderr}${truncationNote}`;
@@ -174,7 +185,7 @@ export function formatCommandResult(result) {
 // cut-off command is never mistaken for a successful run.
 function describeExit({ code, signal, truncated }) {
   if (code !== null) return String(code);
-  if (truncated) return "none (stopped after too much output)";
+  if (truncated) return "none (output cut off; the command may still be running)";
   if (signal) return `none (killed by signal ${signal})`;
   return "none (connection closed before the command finished)";
 }

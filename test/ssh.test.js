@@ -79,7 +79,7 @@ test("collectOutput stops at the byte cap across stdout and stderr and closes th
   assert.equal(result.stdout, "123456");
   assert.equal(result.stderr, "abcd");
   assert.equal(result.truncated, true);
-  assert.equal(result.code, null, "a stopped command has no exit code");
+  assert.equal(result.code, null, "a cut-off command has no exit code");
   assert.equal(stream.closed, true);
 });
 
@@ -101,6 +101,18 @@ test("an exception inside a stream handler rejects the call instead of crashing 
 
 test("a truncated result says so, so the model can't mistake it for complete output", () => {
   const text = formatCommandResult({ stdout: "x", stderr: "", code: null, signal: null, truncated: true });
-  assert.match(text, /^Exit: none \(stopped after too much output\)/);
+  assert.match(text, /^Exit: none \(output cut off; the command may still be running\)/);
   assert.match(text, /output truncated at \d+ bytes/);
+  // Closing the channel doesn't kill the remote process, so never claim it stopped.
+  assert.doesNotMatch(text, /stopped/);
+  assert.match(text, /may still be running on the host; check its state before retrying/);
+});
+
+test("fingerprint padding is stripped without a backtracking regex", () => {
+  const verify = createHostVerifier(`${hostKeyFingerprint(hostKey)}${"=".repeat(3)}`);
+  assert.equal(verify(hostKey), true);
+  // A long run of = that isn't at the end must still be handled in linear time.
+  const started = process.hrtime.bigint();
+  createHostVerifier(`SHA256:${"=".repeat(50_000)}x`);
+  assert.ok(process.hrtime.bigint() - started < 200_000_000n, "took too long");
 });
