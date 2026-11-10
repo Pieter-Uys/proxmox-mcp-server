@@ -70,6 +70,16 @@ Fill in at least `PROXMOX_HOST`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PR
 
 If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit. With it set, the audit log records the client IP from Cloudflare's `cf-connecting-ip` header. Behind a proxy other than Cloudflare, make sure the proxy removes any `cf-connecting-ip` header sent by clients.
 
+### Community scripts
+
+`run_community_script` downloads a script from [community-scripts/ProxmoxVE](https://github.com/community-scripts/ProxmoxVE) and runs it as root on the host. By default it fetches from the `main` branch, so what runs is whatever is on `main` at that moment. To pin it, pick a commit you have reviewed and set its SHA (or a release tag):
+
+```
+COMMUNITY_SCRIPTS_REF=0123456789abcdef0123456789abcdef01234567
+```
+
+The pin covers the top-level `ct/<name>.sh` script only. Those scripts load their shared helpers (`build.func` and what it pulls in) from the separate `community-scripts/core` repository, on its `main` branch, so a pin narrows what can change but doesn't freeze everything that runs. If you need that, set `SHELL_MODE=readonly` or `off` to disable the tool.
+
 ## 5. Run it
 
 ### Directly with Node

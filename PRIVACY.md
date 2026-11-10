@@ -10,14 +10,14 @@ Proxmox MCP Server is self-hosted software. It runs on your own infrastructure a
 
 ## What the server logs
 
-- **Audit log** (`AUDIT_LOG`, JSON Lines on local disk): timestamp, authenticated user, source IP, tool name, arguments, outcome and duration. Fields named like passwords, secrets, tokens or private keys are redacted. You control retention and rotation.
+- **Audit log** (`AUDIT_LOG`, JSON Lines on local disk): timestamp, authenticated user, source IP, tool name, arguments, outcome and duration. For community scripts it also records the script URL and git ref. Fields named like passwords, secrets, tokens or private keys are redacted. You control retention and rotation.
 - **Process logs** (stdout or journald): request method names and truncated request or response summaries, with control characters stripped.
 
 ## Network destinations
 
 - Your Proxmox host (API and SSH).
 - Your Authentik instance.
-- `raw.githubusercontent.com`, only when the `run_community_script` tool is used, to fetch the requested community script.
+- `raw.githubusercontent.com`, only when the `run_community_script` tool is used, to fetch the requested community script. It is fetched from the commit or tag in `COMMUNITY_SCRIPTS_REF`, or from the `main` branch if that is unset. The script itself then fetches further files from GitHub (the shared helpers in `community-scripts/core`), from the Proxmox host.
 
 The server does not use analytics or advertising services. When `run_community_script` fetches a script, `raw.githubusercontent.com` receives the request and its network metadata.
 

@@ -55,7 +55,7 @@ The server exposes 13 tools.
 | `host_shell` | Run a command on the Proxmox host over SSH | Anything off the read-only allowlist |
 | `lxc_shell` | Run a command inside an LXC via `pct exec` | Anything off the read-only allowlist |
 | `vm_ssh` | SSH into a VM by IP address and run a command, with the server's SSH key. Targets can be limited with `VM_SSH_ALLOWED_CIDRS`; a `password` argument is refused unless `VM_SSH_PASSWORD_AUTH=on` | Anything off the read-only allowlist |
-| `run_community_script` | Run a [community-scripts.org](https://community-scripts.org) LXC script | Always (runs remote code as root) |
+| `run_community_script` | Run a [community-scripts.org](https://community-scripts.org) LXC script, from the commit or tag in `COMMUNITY_SCRIPTS_REF` if set | Always (runs remote code as root) |
 
 ### MCP annotations
 
@@ -140,6 +140,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `AUTH_MODE` | See [Modes](#modes) |
 | `SHELL_MODE` | See [Modes](#modes) |
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
+| `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
 | `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
 | `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. |

@@ -1,7 +1,11 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleJsonRpc, negotiateProtocolVersion } from "../src/jsonrpc.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { handleJsonRpc, negotiateProtocolVersion, toolAuditFields } from "../src/jsonrpc.js";
+import { SECURITY } from "../src/config.js";
 
 const initialize = (params) =>
   handleJsonRpc({ jsonrpc: "2.0", id: 1, method: "initialize", params });
@@ -26,4 +30,37 @@ test("tools/list advertises annotations", async () => {
   for (const tool of response.result.tools) {
     assert.equal(typeof tool.annotations?.readOnlyHint, "boolean", tool.name);
   }
+});
+
+// ─── Tool audit fields ──────────────────────────────────────────────────────
+test("a community script call is audited with the exact URL and ref it would run", async () => {
+  // A file of its own: other test files write the shared audit log in parallel.
+  const logFile = path.join(os.tmpdir(), "proxmox-mcp-test", `jsonrpc-${process.pid}.jsonl`);
+  const previousLog = SECURITY.auditLog;
+  SECURITY.auditLog = logFile;
+  fs.rmSync(logFile, { force: true });
+  try {
+    const response = await handleJsonRpc({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "run_community_script", arguments: { script: "pihole" } },
+    });
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /ProxmoxVE\/main\/ct\/pihole\.sh/);
+    const [entry] = fs.readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(entry.outcome, "blocked");
+    assert.equal(entry.scriptUrl, "https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/pihole.sh");
+    assert.equal(entry.scriptRef, "main");
+    assert.equal(entry.scriptPinned, false);
+  } finally {
+    SECURITY.auditLog = previousLog;
+    fs.rmSync(logFile, { force: true });
+  }
+});
+
+test("toolAuditFields is empty for tools without extra fields and for malformed arguments", () => {
+  assert.deepEqual(toolAuditFields("get_status", { scope: "cluster" }), {});
+  assert.deepEqual(toolAuditFields("no_such_tool", {}), {});
+  assert.deepEqual(toolAuditFields("run_community_script", "not an object"), {});
 });

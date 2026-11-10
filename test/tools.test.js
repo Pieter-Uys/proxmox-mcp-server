@@ -1,9 +1,9 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TOOLS, TOOL_LIST, findTool, startupSetting, callTool } from "../src/tools.js";
+import { TOOLS, TOOL_LIST, findTool, startupSetting, callTool, communityScriptSource } from "../src/tools.js";
 import { getPolicyBlockReason } from "../src/policy.js";
-import { SECURITY } from "../src/config.js";
+import { CONFIG, SECURITY } from "../src/config.js";
 import { parseCidrList } from "../src/cidr.js";
 import { validateArgs, checkRequiredWhen } from "../src/validate.js";
 
@@ -179,6 +179,52 @@ test("vm_ssh: run() re-checks the limits, so a direct callTool can't skip them",
     callTool("vm_ssh", { ip: "10.0.0.5", command: "uptime", password: "x" }),
     /VM_SSH_PASSWORD_AUTH=off/,
   );
+});
+
+// ─── Community scripts: pinned ref ──────────────────────────────────────────
+const SCRIPTS_BASE = "https://raw.githubusercontent.com/community-scripts/ProxmoxVE";
+
+test("communityScriptSource uses main when no ref is pinned", () => {
+  assert.deepEqual(communityScriptSource("pihole", undefined), {
+    ref: "main",
+    pinned: false,
+    url: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
+  });
+});
+
+test("communityScriptSource uses the pinned commit or tag in place of main", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  assert.deepEqual(communityScriptSource("pihole", sha), {
+    ref: sha,
+    pinned: true,
+    url: `${SCRIPTS_BASE}/${sha}/ct/pihole.sh`,
+  });
+  assert.equal(communityScriptSource("nextcloud", "v2024.11.01").url, `${SCRIPTS_BASE}/v2024.11.01/ct/nextcloud.sh`);
+});
+
+test("run_community_script: the command and confirmation name the exact URL and ref", async () => {
+  const previous = CONFIG.communityScripts.ref;
+  try {
+    CONFIG.communityScripts.ref = undefined;
+    const tool = TOOLS.run_community_script;
+    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/main/ct/pihole.sh)"`);
+    const unpinned = getPolicyBlockReason(tool, { script: "pihole" });
+    assert.match(unpinned, new RegExp(`${SCRIPTS_BASE}/main/ct/pihole\\.sh`));
+    assert.match(unpinned, /unpinned branch.*COMMUNITY_SCRIPTS_REF/);
+    assert.deepEqual(tool.auditFields({ script: "pihole" }), {
+      scriptUrl: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
+      scriptRef: "main",
+      scriptPinned: false,
+    });
+
+    CONFIG.communityScripts.ref = "v1.2.3";
+    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/v1.2.3/ct/pihole.sh)"`);
+    const pinned = getPolicyBlockReason(tool, { script: "pihole" });
+    assert.match(pinned, /v1\.2\.3\/ct\/pihole\.sh.*pinned to ref v1\.2\.3/);
+    assert.equal(tool.auditFields({ script: "pihole" }).scriptPinned, true);
+  } finally {
+    CONFIG.communityScripts.ref = previous;
+  }
 });
 
 test("read-only tools never need confirmation", () => {

@@ -47,6 +47,7 @@ const METHODS = {
 async function handleToolCall(id, params, caller) {
   const toolName = params?.name;
   const args = params?.arguments || {};
+  const toolFields = toolAuditFields(toolName, args);
   const auditToolCall = (outcomeFields) =>
     audit({
       event: "tool_call",
@@ -54,6 +55,7 @@ async function handleToolCall(id, params, caller) {
       ip: caller.ip,
       tool: toolName,
       args: redactSecrets(args),
+      ...toolFields,
       ...outcomeFields,
     });
 
@@ -63,6 +65,15 @@ async function handleToolCall(id, params, caller) {
     return toolErrorResult(id, refusal.message);
   }
   return runTool(id, toolName, args, auditToolCall);
+}
+
+// Extra audit fields a tool adds, e.g. which script URL a community script
+// call would run. Only for arguments that are an object, so a malformed call
+// can't make this throw before it is audited and refused.
+export function toolAuditFields(toolName, args) {
+  const tool = findTool(toolName);
+  if (!tool?.auditFields || !args || typeof args !== "object") return {};
+  return redactSecrets(tool.auditFields(args));
 }
 
 // Returns why the server won't run this call, or null if it may run.

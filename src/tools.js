@@ -20,8 +20,32 @@ function dispatchByAction(actions) {
 
 const NETWORK_RELOAD_COMMAND = "ifreload -a";
 
+// ─── Community scripts ──────────────────────────────────────────────────────
+// Remote code that runs as root. COMMUNITY_SCRIPTS_REF pins the commit or tag;
+// without it the main branch is used, and the confirmation message and audit
+// entry name the exact URL so the user can see what will run.
+const COMMUNITY_SCRIPTS_RAW_URL = "https://raw.githubusercontent.com/community-scripts/ProxmoxVE";
+const COMMUNITY_SCRIPTS_DEFAULT_REF = "main";
+
+export function communityScriptSource(script, ref = CONFIG.communityScripts.ref) {
+  const resolvedRef = ref || COMMUNITY_SCRIPTS_DEFAULT_REF;
+  return {
+    ref: resolvedRef,
+    pinned: Boolean(ref),
+    url: `${COMMUNITY_SCRIPTS_RAW_URL}/${resolvedRef}/ct/${script}.sh`,
+  };
+}
+
 function communityScriptCommand(args) {
-  return `bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/${args.script}.sh)"`;
+  return `bash -c "$(curl -fsSL ${communityScriptSource(args.script).url})"`;
+}
+
+function communityScriptConfirmationReason(args) {
+  const { url, ref, pinned } = communityScriptSource(args.script);
+  const pinNote = pinned
+    ? `pinned to ref ${ref} by COMMUNITY_SCRIPTS_REF`
+    : `ref ${ref}, an unpinned branch that can change at any time; set COMMUNITY_SCRIPTS_REF to pin it`;
+  return `Community scripts download and run remote code as root. This runs ${url} (${pinNote}).`;
 }
 
 function zfsCommand(args) {
@@ -78,6 +102,7 @@ function requireWhen(field, values, required) {
 //   shellCommand(args)        shell command this call runs, or null (SHELL_MODE applies)
 //   requiredWhen              arguments that only some actions need (requireWhen)
 //   confirmationReason(args)  why this call needs confirm: true, or null
+//   auditFields(args)         extra fields for this call's audit entry
 //   run(args, node)           performs the call; returns text or JSON data
 export const TOOLS = {
   proxmox_api: {
@@ -212,8 +237,11 @@ export const TOOLS = {
       required: ["script"],
     },
     shellCommand: communityScriptCommand,
-    confirmationReason: () =>
-      "Community scripts download and run remote code as root.",
+    confirmationReason: communityScriptConfirmationReason,
+    auditFields: (args) => {
+      const { url, ref, pinned } = communityScriptSource(args.script);
+      return { scriptUrl: url, scriptRef: ref, scriptPinned: pinned };
+    },
     run: (args) => runOnHost(communityScriptCommand(args)),
   },
 

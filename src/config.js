@@ -30,6 +30,18 @@ function parseNonNegativeInt(name, fallback) {
   return Number(raw);
 }
 
+// Reads an optional git ref (commit SHA or tag). It ends up in a shell command
+// and a URL path, so only plain ref characters are accepted.
+function parseOptionalGitRef(name) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw)) {
+    console.error(`${name} must be a commit SHA or tag (letters, digits, . _ -), got "${raw}".`);
+    process.exit(1);
+  }
+  return raw;
+}
+
 // Reads an optional comma-separated list, lower-cased, or null when unset or empty.
 function parseOptionalList(name) {
   const entries = (process.env[name] || "")
@@ -85,6 +97,11 @@ export const CONFIG = {
     // names it, so a token Authentik issued for another application on the
     // same provider can't be replayed here.
     audience: process.env.AUTHENTIK_AUDIENCE?.trim() || undefined,
+  },
+  communityScripts: {
+    // Commit SHA or tag of community-scripts/ProxmoxVE that run_community_script
+    // fetches from. Unset means the main branch, which can change at any time.
+    ref: parseOptionalGitRef("COMMUNITY_SCRIPTS_REF"),
   },
 };
 
