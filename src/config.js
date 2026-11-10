@@ -180,7 +180,7 @@ for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {
 // AUTH_MODE=log or off lets anyone who reaches the port run tools as root on
 // the Proxmox host, so it needs an explicit ALLOW_INSECURE_AUTH=yes and then
 // listens on loopback only.
-const LOOPBACK_ADDRESSES = ["127.0.0.1", "::1"];
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
 
 function chooseBindAddress() {
   const requested = process.env.MCP_BIND_ADDRESS?.trim() || undefined;
@@ -195,7 +195,7 @@ function chooseBindAddress() {
     );
     process.exit(1);
   }
-  if (requested && !LOOPBACK_ADDRESSES.includes(requested)) {
+  if (requested && !LOOPBACK_ADDRESSES.has(requested)) {
     console.error(`AUTH_MODE=${SECURITY.authMode} only listens on loopback, but MCP_BIND_ADDRESS is ${requested}.`);
     process.exit(1);
   }
