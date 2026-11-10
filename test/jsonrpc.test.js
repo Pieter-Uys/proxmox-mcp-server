@@ -17,6 +17,11 @@ test("initialize echoes a protocol version the server supports", async () => {
   }
 });
 
+test("initialize reports the package.json version", async () => {
+  const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal((await initialize({})).result.serverInfo.version, version);
+});
+
 test("initialize answers with the newest supported version otherwise", async () => {
   for (const params of [{ protocolVersion: "2099-01-01" }, { protocolVersion: 5 }, {}, undefined]) {
     const response = await initialize(params);
