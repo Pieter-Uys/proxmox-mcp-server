@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  node:
+    name: node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,3 +35,13 @@ jobs:
         run: node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=75
       - run: npm audit --omit=dev --audit-level=high
         if: matrix.node-version == 22
+
+  # The branch ruleset requires a check named "test". Matrix jobs report as
+  # "node 22" and so on, so this job gives the ruleset one stable name that
+  # passes only if every Node version passed.
+  test:
+    needs: node
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.node.result }}" = success
