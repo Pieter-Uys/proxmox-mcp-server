@@ -120,3 +120,19 @@ test("a malformed JSON body is logged without quoting any of it", async () => {
   assert.doesNotMatch(lines.join("\n"), /hunter2-secret/);
   assert.match(lines.join("\n"), /malformed JSON body/);
 });
+
+test("an unknown tool is a JSON-RPC Invalid params error, not a tool result", async () => {
+  const reply = await handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 12,
+    method: "tools/call",
+    params: { name: "no_such_tool", arguments: {} },
+  });
+  assert.equal(reply.result, undefined);
+  assert.equal(reply.error.code, -32602);
+  assert.match(reply.error.message, /Unknown tool: no_such_tool/);
+  for (const name of [undefined, "constructor", "__proto__"]) {
+    const missing = await handleJsonRpc({ jsonrpc: "2.0", id: 13, method: "tools/call", params: { name } });
+    assert.equal(missing.error?.code, -32602, String(name));
+  }
+});

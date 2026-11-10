@@ -76,15 +76,23 @@ export function sendRequest(
   { timeoutMs = PROXMOX_REQUEST_TIMEOUT_MS, maxBytes = PROXMOX_MAX_RESPONSE_BYTES, request: send = https.request } = {},
 ) {
   return new Promise((resolve, reject) => {
+    // Declared before anything can call fail(), so the order of callbacks
+    // from `send` never matters.
     let settled = false;
+    let request;
+    let deadline;
     const fail = (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
-      request.destroy();
+      request?.destroy();
       reject(error);
     };
-    const request = send(url, options, (response) => {
+    deadline = setTimeout(
+      () => fail(new Error(`Proxmox API did not answer within ${timeoutMs / 1000}s.`)),
+      timeoutMs,
+    );
+    request = send(url, options, (response) => {
       const chunks = [];
       let bytes = 0;
       response.on("data", (chunk) => {
@@ -101,10 +109,6 @@ export function sendRequest(
       });
       response.on("error", fail);
     });
-    const deadline = setTimeout(
-      () => fail(new Error(`Proxmox API did not answer within ${timeoutMs / 1000}s.`)),
-      timeoutMs,
-    );
     request.on("error", fail);
     request.end(payload ?? undefined);
   });
