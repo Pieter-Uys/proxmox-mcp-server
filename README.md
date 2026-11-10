@@ -45,13 +45,13 @@ The server exposes 13 tools.
 | --- | --- | --- |
 | `get_status` | Cluster, node, VM, LXC and storage status | Never (read-only) |
 | `proxmox_api` | Any Proxmox REST API call | Every non-GET call |
-| `manage_vm` | Start, stop, restart or delete a VM or LXC | `stop`, `delete` |
-| `create_lxc` | Create a new LXC container | |
-| `backup_vm` | Back up a VM or LXC | `mode: stop` |
-| `set_boot_order` | Set VM and LXC startup order | |
-| `firewall_rule` | Manage Proxmox firewall rules | `delete` |
-| `network_config` | Manage network interfaces and VLANs | `delete`, `apply` |
-| `storage_config` | Manage NFS, SMB, ZFS and LVM storage | `delete`, `zfs_create` |
+| `manage_vm` | Start, stop, restart, shut down or delete a VM or LXC | Every action |
+| `create_lxc` | Create a new LXC container | Always |
+| `backup_vm` | Back up a VM or LXC | Always |
+| `set_boot_order` | Set VM and LXC startup order | Always |
+| `firewall_rule` | Manage Proxmox firewall rules | `add`, `delete` |
+| `network_config` | Manage network interfaces and VLANs | Everything except `list` |
+| `storage_config` | Manage NFS, SMB, ZFS and LVM storage. `zfs_create` creates one dataset from `dataset`, `properties` and `parents` | Everything except `list`, `zfs_list` |
 | `host_shell` | Run a command on the Proxmox host over SSH | Anything off the read-only allowlist |
 | `lxc_shell` | Run a command inside an LXC via `pct exec` | Anything off the read-only allowlist |
 | `vm_ssh` | SSH into a VM by IP address and run a command, with the server's SSH key. Private ranges only by default (`VM_SSH_ALLOWED_CIDRS`). An optional `hostKey` pins the VM's key; a `password` needs `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` | Anything off the read-only allowlist |
@@ -75,11 +75,11 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Layer | What it does |
 | --- | --- |
 | **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Opaque tokens are checked through Authentik's userinfo endpoint. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` optionally limits which signed-in users are accepted, checked on every request. |
-| **Confirmation** | Deletes, hard stops, network apply, ZFS commands, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
 | **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds (community scripts after 20 minutes), and a timeout says the command may still be running. |
-| **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `zfsCommand`) are restricted to safe formats. |
+| **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `dataset`, ZFS properties) are restricted to safe formats. |
 | **Rate limiting** | OAuth and MCP routes are limited per client IP (`RATE_LIMIT_PER_MINUTE`). Over-limit requests get HTTP 429. `/health` is not limited. |
 | **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. Community script calls also record the script URL and git ref. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0`. Rotate it with logrotate or similar on the host. |
 
@@ -88,6 +88,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Setting | Values |
 | --- | --- |
 | `AUTH_MODE` | `enforce` (default), `log` (accept but record failures), `off` |
+| `TOOL_MODE` | `full` (default), `readonly` (refuses every call that would need `confirm: true`, whatever the model sends: a look-but-don't-touch deployment) |
 | `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths, no follow modes), `off` |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default, `vm_ssh` uses the server's key only), `on` |
 
@@ -155,6 +156,7 @@ The server will not start unless the variables marked **required** are set, so a
 | Variable | Notes |
 | --- | --- |
 | `AUTH_MODE` | See [Modes](#modes) |
+| `TOOL_MODE` | See [Modes](#modes) |
 | `SHELL_MODE` | See [Modes](#modes) |
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
 | `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
@@ -174,7 +176,8 @@ The suite covers:
 
 - the read-only shell allowlist, including the cases it must refuse (chaining, redirects, substitution, `date -s`, `find -delete`, `ss -K`, `ss -D`, abbreviated long options such as `ss --kil` and `journalctl --rot`, `systemctl --host`, `tail -f`, `ip link set` and so on)
 - `SHELL_MODE` enforcement across `full`, `readonly` and `off`, including tools that run shell commands indirectly
-- which tool calls require `confirm: true`, and that only the boolean `true` counts
+- which tool calls require `confirm: true` (every non-read call), that only the boolean `true` counts, and that `TOOL_MODE=readonly` refuses them all
+- `zfs_create` building only `zfs create`, with every word quoted
 - argument validation against the real tool schemas, including shell and path injection attempts
 - audit log redaction of secret-looking fields
 - sensitive-path reads (including `..` traversal and `/proc/*/root` paths), recursive `grep` in its abbreviated forms (`--rec`, `-d rec`), `ps e` and the `smartctl` set forms behind `-l` and `-d`

@@ -80,11 +80,12 @@ test("proxmox_api: only GET runs without confirmation", () => {
   }
 });
 
-test("manage_vm: stop and delete are destructive, start is not", () => {
-  assert.equal(blocked("manage_vm", { vmid: 101, action: "start" }), false);
-  assert.equal(blocked("manage_vm", { vmid: 101, action: "stop" }), true);
-  assert.equal(blocked("manage_vm", { vmid: 101, action: "delete" }), true);
-  assert.equal(blocked("manage_vm", { vmid: 101, action: "delete", confirm: true }), false);
+test("manage_vm: every action needs confirmation, including start", () => {
+  for (const action of ["start", "stop", "restart", "shutdown", "delete"]) {
+    assert.equal(blocked("manage_vm", { vmid: 101, action }), true, action);
+    assert.equal(blocked("manage_vm", { vmid: 101, action, confirm: true }), false, `${action} + confirm`);
+  }
+  assert.match(getPolicyBlockReason(TOOLS.manage_vm, { vmid: 101, action: "delete" }), /destructive/);
 });
 
 test("firewall_rule: delete needs confirmation, list does not", () => {
@@ -102,12 +103,14 @@ test("storage_config: delete and zfs_create need confirmation", () => {
   assert.equal(blocked("storage_config", { action: "list" }), false);
   assert.equal(blocked("storage_config", { action: "zfs_list" }), false);
   assert.equal(blocked("storage_config", { action: "delete", storage: "nfs1" }), true);
-  assert.equal(blocked("storage_config", { action: "zfs_create", zfsCommand: "create tank/x" }), true);
+  assert.equal(blocked("storage_config", { action: "zfs_create", dataset: "tank/x" }), true);
 });
 
-test("backup_vm: only mode stop needs confirmation", () => {
-  assert.equal(blocked("backup_vm", { vmid: 101, mode: "snapshot" }), false);
-  assert.equal(blocked("backup_vm", { vmid: 101, mode: "stop" }), true);
+test("backup_vm: every mode needs confirmation, and stop says it shuts the guest down", () => {
+  for (const mode of ["snapshot", "suspend", "stop", undefined]) {
+    assert.equal(blocked("backup_vm", { vmid: 101, mode }), true, String(mode));
+  }
+  assert.match(getPolicyBlockReason(TOOLS.backup_vm, { vmid: 101, mode: "stop" }), /shuts the guest down/);
 });
 
 test("run_community_script always needs confirmation", () => {
@@ -268,6 +271,95 @@ test("run_community_script: the command and confirmation name the exact URL and 
   }
 });
 
+// ─── One confirmation rule: every non-read action (audit M1) ───────────────
+const NON_READ_CALLS = [
+  ["manage_vm", { vmid: 101, action: "start" }],
+  ["manage_vm", { vmid: 101, action: "restart" }],
+  ["manage_vm", { vmid: 101, action: "shutdown" }],
+  ["create_lxc", { vmid: 150, hostname: "ct", ostemplate: "local:vztmpl/debian.tar.zst" }],
+  ["set_boot_order", { vmid: 101, order: 1 }],
+  ["backup_vm", { vmid: 101 }],
+  ["backup_vm", { vmid: 101, mode: "snapshot" }],
+  ["firewall_rule", { action: "add", level: "cluster", rule: { type: "in", action: "DROP" } }],
+  ["network_config", { action: "create", iface: "vmbr1" }],
+  ["network_config", { action: "update", iface: "vmbr1", config: {} }],
+  ["storage_config", { action: "add", storage: "nfs1", config: {} }],
+  ["storage_config", { action: "update", storage: "nfs1", config: { disable: 1 } }],
+];
+const READ_CALLS = [
+  ["get_status", { scope: "cluster" }],
+  ["proxmox_api", { method: "GET", path: "/version" }],
+  ["firewall_rule", { action: "list", level: "host" }],
+  ["network_config", { action: "list" }],
+  ["storage_config", { action: "list" }],
+  ["storage_config", { action: "zfs_list" }],
+  ["host_shell", { command: "uptime" }],
+];
+
+test("every call that is not a pure read needs confirm: true", () => {
+  for (const [tool, args] of NON_READ_CALLS) {
+    assert.equal(blocked(tool, args), true, `${tool} ${JSON.stringify(args)}`);
+    assert.equal(blocked(tool, { ...args, confirm: true }), false, `${tool} with confirm`);
+  }
+});
+
+test("pure reads still run without confirmation", () => {
+  for (const [tool, args] of READ_CALLS) {
+    assert.equal(blocked(tool, args), false, `${tool} ${JSON.stringify(args)}`);
+  }
+});
+
+test("a tool advertised as destructive has at least one confirm-gated action", () => {
+  for (const { name, annotations } of TOOL_LIST) {
+    if (annotations.destructiveHint)
+      assert.equal(typeof TOOLS[name].confirmationReason, "function", `${name} is destructive but never asks`);
+  }
+});
+
+// ─── zfs_create builds only zfs create (audit M2) ───────────────────────────
+test("zfs_create runs zfs create on the named dataset, every word quoted", () => {
+  const command = TOOLS.storage_config.shellCommand({
+    action: "zfs_create",
+    dataset: "tank/data",
+    properties: { compression: "lz4", "com.example:owner": "ops" },
+    parents: true,
+  });
+  assert.equal(command, "zfs create -p -o 'compression=lz4' -o 'com.example:owner=ops' 'tank/data'");
+  assert.equal(TOOLS.storage_config.shellCommand({ action: "zfs_create", dataset: "tank/x" }), "zfs create 'tank/x'");
+});
+
+test("zfs_create refuses anything that isn't a dataset name or a plain property", () => {
+  for (const dataset of ["tank", "-r rpool/data", "rpool/data -r", "tank/../x", "tank//x", "/tank/x", "tank/x@snap"]) {
+    assert.ok(problems("storage_config", { action: "zfs_create", dataset }).length, dataset);
+  }
+  for (const properties of [{ "-r": "x" }, { "a b": "x" }, { compression: "lz4 -o mountpoint=/" }, { compression: "" }, { quota: 5 }]) {
+    const reason = getPolicyBlockReason(TOOLS.storage_config, { action: "zfs_create", dataset: "tank/x", properties, confirm: true });
+    assert.match(reason ?? "", /ZFS property/, JSON.stringify(properties));
+  }
+});
+
+// ─── TOOL_MODE=readonly (audit M3) ──────────────────────────────────────────
+test("TOOL_MODE=readonly blocks every confirm-gated call, even with confirm: true", async () => {
+  await withSecurity({ toolMode: "readonly" }, () => {
+    for (const [tool, args] of [
+      ...NON_READ_CALLS,
+      ["manage_vm", { vmid: 101, action: "delete" }],
+      ["proxmox_api", { method: "DELETE", path: "/nodes/pve/qemu/100" }],
+      ["host_shell", { command: "reboot" }],
+      ["run_community_script", { script: "pihole" }],
+    ]) {
+      assert.match(getPolicyBlockReason(TOOLS[tool], { ...args, confirm: true }) ?? "", /TOOL_MODE=readonly/, tool);
+    }
+    for (const [tool, args] of READ_CALLS) {
+      assert.equal(getPolicyBlockReason(TOOLS[tool], args), null, tool);
+    }
+  });
+});
+
+test("TOOL_MODE defaults to full", () => {
+  assert.equal(SECURITY.toolMode, "full");
+});
+
 test("read-only tools never need confirmation", () => {
   assert.equal(blocked("get_status", { scope: "cluster" }), false);
 });
@@ -282,8 +374,9 @@ test("rejects values that could break out of shell commands or API paths", () =>
   assert.ok(problems("manage_vm", { vmid: 101, action: "start", node: "pve; reboot" }).length);
   assert.ok(problems("manage_vm", { vmid: 101, action: "start", node: "../etc" }).length);
   assert.ok(problems("storage_config", { action: "update", storage: "../../etc" }).length);
-  assert.ok(problems("storage_config", { action: "zfs_create", zfsCommand: "create tank/x; rm -rf /" }).length);
-  assert.ok(problems("storage_config", { action: "zfs_create", zfsCommand: "create $(reboot)" }).length);
+  assert.ok(problems("storage_config", { action: "zfs_create", dataset: "tank/x; rm -rf /" }).length);
+  assert.ok(problems("storage_config", { action: "zfs_create", dataset: "tank/$(reboot)" }).length);
+  assert.ok(problems("storage_config", { action: "zfs_create", zfsCommand: "destroy -r rpool" }).length, "zfsCommand is gone");
   assert.ok(problems("run_community_script", { script: "pihole; reboot" }).length);
   assert.ok(problems("run_community_script", { script: "../evil" }).length);
 });
@@ -299,14 +392,14 @@ test("rejects out-of-range ids, unknown actions and unknown arguments", () => {
 test("accepts well-formed calls", () => {
   assert.deepEqual(problems("manage_vm", { vmid: 101, action: "start", type: "lxc", node: "pve" }), []);
   assert.deepEqual(problems("proxmox_api", { method: "GET", path: "/version" }), []);
-  assert.deepEqual(problems("storage_config", { action: "zfs_create", zfsCommand: "create tank/data" }), []);
+  assert.deepEqual(problems("storage_config", { action: "zfs_create", dataset: "tank/data" }), []);
 });
 
 test("requiredWhen: action-specific arguments are enforced", () => {
   assert.ok(problems("firewall_rule", { action: "delete", level: "host" }).some((p) => /pos/.test(p)));
   assert.ok(problems("firewall_rule", { action: "list", level: "vm" }).some((p) => /vmid/.test(p)));
   assert.ok(problems("network_config", { action: "update" }).some((p) => /iface/.test(p)));
-  assert.ok(problems("storage_config", { action: "zfs_create" }).some((p) => /zfsCommand/.test(p)));
+  assert.ok(problems("storage_config", { action: "zfs_create" }).some((p) => /dataset/.test(p)));
 });
 
 test("startupSetting builds the Proxmox startup value", () => {
