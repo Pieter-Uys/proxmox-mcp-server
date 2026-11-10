@@ -146,6 +146,16 @@ test("vm_ssh: VM_SSH_ALLOWED_CIDRS limits targets, and confirm can't override it
   });
 });
 
+test("vm_ssh: IPv4-mapped IPv6 addresses are matched against IPv4 ranges", async () => {
+  await withSecurity({ vmSshAllowedCidrs: parseCidrList("192.168.10.0/24") }, () => {
+    assert.equal(vmSshBlock({ ip: "::ffff:192.168.10.20" }), null);
+    // The mapped form can't be used to reach an address the IPv4 list leaves out.
+    for (const ip of ["::ffff:10.0.0.5", "::ffff:127.0.0.1"]) {
+      assert.match(vmSshBlock({ ip, confirm: true }), /outside VM_SSH_ALLOWED_CIDRS/, ip);
+    }
+  });
+});
+
 test("vm_ssh: the allowlist also applies in SHELL_MODE=readonly", async () => {
   await withSecurity({ shellMode: "readonly", vmSshAllowedCidrs: parseCidrList("192.168.10.0/24") }, () => {
     assert.match(vmSshBlock({ ip: "10.0.0.5" }), /outside VM_SSH_ALLOWED_CIDRS/);
