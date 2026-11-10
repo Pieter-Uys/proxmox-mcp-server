@@ -1,3 +1,4 @@
+import path from "node:path";
 import { SECURITY } from "./config.js";
 
 // ─── Shell command confirmation (SHELL_MODE=full) ───────────────────────────
@@ -5,8 +6,10 @@ import { SECURITY } from "./config.js";
 // A list of known-dangerous commands can never be complete (find -delete,
 // ip link set down, lvremove, qm set --delete, ...), so approval is the default.
 export function shellConfirmationReason(args) {
-  return isReadonlyCommand(String(args.command || ""))
-    ? null
+  const command = String(args.command || "");
+  if (isReadonlyCommand(command)) return null;
+  return readsSensitivePath(command)
+    ? "This command reads a path that can hold secrets (keys, password hashes, cluster credentials)."
     : "This command isn't on the read-only list, so it could change the system.";
 }
 
@@ -38,11 +41,145 @@ export function getPolicyBlockReason(tool, args) {
 // `find / -delete`, `ip link set eth0 down` and similar.
 const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
+// A command that reads a sensitive path is never read-only in the sense that
+// matters here: it needs confirm: true, and SHELL_MODE=readonly refuses it.
 export function isReadonlyCommand(command) {
-  const words = command.trim().split(/[ \t]+/);
-  if (!words.every((word) => PLAIN_WORD.test(word))) return false;
+  const words = plainWords(command);
+  if (!words) return false;
   const [name, ...args] = words;
-  return Object.hasOwn(READONLY_COMMANDS, name) && READONLY_COMMANDS[name](args);
+  return (
+    Object.hasOwn(READONLY_COMMANDS, name) &&
+    READONLY_COMMANDS[name](args) &&
+    !touchesSensitivePath(name, args)
+  );
+}
+
+// The command's words, or null if any word is something the shell would interpret.
+function plainWords(command) {
+  const words = command.trim().split(/[ \t]+/);
+  return words.every((word) => PLAIN_WORD.test(word)) ? words : null;
+}
+
+function readsSensitivePath(command) {
+  const words = plainWords(command);
+  return words !== null && touchesSensitivePath(words[0], words.slice(1));
+}
+
+// ─── Sensitive paths ────────────────────────────────────────────────────────
+// Readers like cat and grep are on the allowlist, so without this a
+// prompt-injected model could read password hashes, SSH keys or cluster
+// secrets with no approval. Best effort: a symlink, a hard link or a copy
+// elsewhere can still reach the same data (see the README's residual risks).
+//
+// Paths that hold secrets, as segments; "*" matches any one segment. They match
+// anywhere in a path, not just at the root, so /proc/1/root/etc/shadow and a
+// container's /var/lib/lxc/101/rootfs/etc/shadow are caught too.
+const SENSITIVE_PATHS = [
+  "/etc/shadow",
+  "/etc/shadow-", // the backup copy passwd tools keep
+  "/etc/gshadow",
+  "/etc/gshadow-",
+  "/etc/pve/priv",
+  "/etc/pve/user.cfg",
+  "/etc/corosync/authkey",
+  "/var/lib/pve-cluster", // config.db holds everything under /etc/pve, priv included
+  "/root/.ssh",
+  "/home/*/.ssh",
+  "/proc/*/environ", // another process's environment, which often carries secrets
+  "/proc/*/root", // a view of another root filesystem, which would bypass the rest
+  "/proc/*/cwd",
+  "/proc/kcore",
+].map((pathText) => pathText.split("/").filter(Boolean));
+
+// File or directory names that hold secrets wherever they are.
+const SENSITIVE_NAMES = [
+  /id_rsa/i,
+  /id_ed25519/i,
+  /id_ecdsa/i,
+  /authorized_keys/i,
+  /^ssh_host_/i,
+  /^\.ssh$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /\.env$/i,
+];
+
+// Commands that print file contents. For these, raw devices are sensitive too:
+// `head -c 100M /dev/sda` would dump the disk, secrets and all.
+const CONTENT_READERS = new Set(["cat", "head", "tail", "grep"]);
+
+// qm config and pct config are left on the allowlist. Their output can include
+// secrets a user put there (API keys in a description, a cloud-init cipassword
+// hash, hookscript arguments), but nothing in the command line says when that
+// is the case, and the same data is available through the Proxmox API GET
+// calls that already run without confirmation. Treat guest config as readable.
+
+function touchesSensitivePath(name, args) {
+  if (name === "grep" && isRecursiveGrep(args)) return true;
+  return args.some((arg) =>
+    pathCandidates(arg).some(
+      (candidate) => isSensitivePath(candidate) || (CONTENT_READERS.has(name) && isRawDevice(candidate)),
+    ),
+  );
+}
+
+// The ways an argument can name a path: as itself (`/etc/shadow`), after an
+// equals sign (`--file=/etc/shadow`), or attached to a short option (`-f/etc/shadow`).
+function pathCandidates(arg) {
+  const candidates = [arg];
+  const equals = arg.indexOf("=");
+  if (equals !== -1) candidates.push(arg.slice(equals + 1));
+  const slash = arg.indexOf("/");
+  if (arg.startsWith("-") && slash !== -1) candidates.push(arg.slice(slash));
+  return candidates;
+}
+
+// Resolves `.`, `..` and repeated slashes, so /etc/../etc//shadow is /etc/shadow.
+// A relative path's leading `..` segments are dropped: where they lead depends
+// on the working directory, and matching anywhere in the path covers the rest.
+function pathSegments(candidate) {
+  return path.posix
+    .normalize(candidate)
+    .split("/")
+    .filter((segment) => segment && segment !== "..");
+}
+
+function isSensitivePath(candidate) {
+  const segments = pathSegments(candidate);
+  return segments.some(
+    (segment, index) =>
+      SENSITIVE_NAMES.some((pattern) => pattern.test(segment)) ||
+      SENSITIVE_PATHS.some((sensitive) => startsWithSegments(segments.slice(index), sensitive)),
+  );
+}
+
+// Anchored at the root (or the working directory, for a relative path), so a
+// project folder that happens to be called "dev" is not caught.
+function isRawDevice(candidate) {
+  return pathSegments(candidate)[0] === "dev";
+}
+
+// True if `segments` is `prefix` or a path under it.
+function startsWithSegments(segments, prefix) {
+  return (
+    segments.length >= prefix.length &&
+    prefix.every((expected, index) => expected === "*" || expected === segments[index])
+  );
+}
+
+// A recursive grep reads every file under a directory, so `grep -r x /etc`
+// would read /etc/shadow without naming it. Checking each file it might reach
+// isn't possible here, so recursive grep always needs confirmation.
+function isRecursiveGrep(args) {
+  return args.some(
+    (arg, index) =>
+      (/^-[A-Za-z]+$/.test(arg) && /[rR]/.test(arg)) ||
+      /^--(dereference-)?recursive$/.test(arg) ||
+      arg === "--directories=recurse" ||
+      arg === "-drecurse" ||
+      (arg === "-d" && args[index + 1] === "recurse") ||
+      (arg === "--directories" && args[index + 1] === "recurse"),
+  );
 }
 
 const anyArgs = () => true;

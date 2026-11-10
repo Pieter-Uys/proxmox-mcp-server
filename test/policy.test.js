@@ -109,6 +109,116 @@ for (const [group, commands] of Object.entries(REFUSED)) {
   });
 }
 
+// ─── Sensitive paths ────────────────────────────────────────────────────────
+const SENSITIVE_READS = {
+  "listed paths and anything under them": [
+    "cat /etc/shadow",
+    "cat /etc/shadow-",
+    "cat /etc/gshadow",
+    "ls /etc/pve/priv",
+    "cat /etc/pve/priv/authkey.key",
+    "cat /etc/pve/priv/token.cfg",
+    "cat /etc/pve/user.cfg",
+    "cat /etc/corosync/authkey",
+    "ls -la /root/.ssh",
+    "cat /root/.ssh/config",
+    "cat /home/alice/.ssh/config",
+    "cat /etc/ssh/ssh_host_ed25519_key",
+    "stat /etc/ssh/ssh_host_rsa_key.pub",
+    "du -sh /var/lib/pve-cluster",
+    "head /var/lib/pve-cluster/config.db",
+    "cat /proc/1/environ",
+  ],
+  "secret-looking file names anywhere": [
+    "cat /opt/app/id_rsa",
+    "cat /srv/backup/id_ed25519.bak",
+    "cat /etc/ssl/private/server.pem",
+    "cat /etc/pve/nodes/pve/pve-ssl.key",
+    "cat /opt/proxmox-mcp/.env",
+    "cat .env",
+    "tail /root/.ssh/authorized_keys",
+    "find / -name authorized_keys",
+  ],
+  "traversal, repeated slashes and other roots": [
+    "cat /etc/../etc/shadow",
+    "cat /etc//shadow",
+    "cat //etc/shadow",
+    "cat /var/../etc/./shadow",
+    "cat ../../etc/shadow",
+    "cat etc/shadow",
+    "cat /proc/1/root/etc/shadow",
+    "cat /var/lib/lxc/101/rootfs/etc/shadow",
+    "cat /home/alice/../../root/.ssh/id_ed25519",
+  ],
+  "paths passed as option values": [
+    "grep -f /etc/shadow /var/log/syslog",
+    "grep -f/etc/shadow /var/log/syslog",
+    "grep --file=/etc/shadow /var/log/syslog",
+    "journalctl --file=/var/lib/pve-cluster/config.db",
+  ],
+  "recursive grep, which would reach secrets without naming them": [
+    "grep -r password /etc",
+    "grep -R password /etc",
+    "grep -rn password /var/log",
+    "grep --recursive password /etc",
+    "grep -d recurse password /etc",
+    "grep --directories=recurse password /etc",
+  ],
+  "raw devices read by content readers": [
+    "head -c 1000000 /dev/sda",
+    "cat /dev/mapper/pve-root",
+    "grep -a root /dev/sda1",
+  ],
+};
+
+for (const [group, commands] of Object.entries(SENSITIVE_READS)) {
+  test(`sensitive reads are not read-only: ${group}`, async () => {
+    for (const command of commands) {
+      assert.equal(isReadonlyCommand(command), false, `should not be read-only: ${command}`);
+      await withShellMode("full", () => {
+        assert.match(getPolicyBlockReason(TOOLS.host_shell, { command }), /secrets.*confirm: true/, command);
+        assert.equal(getPolicyBlockReason(TOOLS.host_shell, { command, confirm: true }), null, command);
+      });
+      await withShellMode("readonly", () => {
+        assert.match(
+          getPolicyBlockReason(TOOLS.host_shell, { command, confirm: true }),
+          /SHELL_MODE=readonly/,
+          command,
+        );
+      });
+    }
+  });
+}
+
+test("ordinary reads stay read-only next to the sensitive-path check", () => {
+  for (const command of [
+    "cat /etc/hostname",
+    "ls /var/log",
+    "ls /etc/pve",
+    "ls /root",
+    "cat /etc/ssh/sshd_config",
+    "cat /etc/pve/storage.cfg",
+    "grep error /var/log/syslog",
+    "grep -i error /var/log/syslog",
+    "tail -n 100 /var/log/syslog",
+    "stat /etc/passwd",
+    "du -sh /var/lib/vz",
+    "cat /home/alice/dev/notes.txt",
+    "smartctl -a /dev/sda",
+    "lsblk /dev/sda",
+    "ls /dev",
+  ]) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
+});
+
+test("lxc_shell and vm_ssh apply the same sensitive-path check", async () => {
+  await withShellMode("full", () => {
+    assert.match(getPolicyBlockReason(TOOLS.lxc_shell, { vmid: 101, command: "cat /etc/shadow" }), /secrets/);
+    assert.match(getPolicyBlockReason(TOOLS.vm_ssh, { ip: "10.0.0.5", command: "cat /root/.ssh/id_rsa" }), /secrets/);
+  });
+});
+
 // ─── SHELL_MODE=full: confirmation ──────────────────────────────────────────
 test("full mode: read-only commands run without confirmation", async () => {
   await withShellMode("full", () => {
