@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { parseCidrList } from "./cidr.js";
 
 // ─── Required settings ─────────────────────────────────────────────────────
 // Settings that point at real infrastructure have no defaults. If one is
@@ -27,6 +28,19 @@ function parseNonNegativeInt(name, fallback) {
     process.exit(1);
   }
   return Number(raw);
+}
+
+// Reads an optional comma-separated CIDR list, or null when unset. Refuses to
+// start on a malformed entry, since dropping it would change who is reachable.
+function parseOptionalCidrList(name) {
+  const raw = process.env[name];
+  if (!raw?.trim()) return null;
+  try {
+    return parseCidrList(raw);
+  } catch (error) {
+    console.error(`${name} is invalid: ${error.message}.`);
+    process.exit(1);
+  }
 }
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -73,6 +87,12 @@ export const SECURITY = {
   // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
   // so the limiter sees real client IPs. 0 means no proxy.
   trustProxyHops: parseNonNegativeInt("TRUST_PROXY_HOPS", "0"),
+  // Addresses vm_ssh may connect to, as a net.BlockList, or null for any
+  // address (server.js warns at startup when it is unset).
+  vmSshAllowedCidrs: parseOptionalCidrList("VM_SSH_ALLOWED_CIDRS"),
+  // off (default): vm_ssh refuses a password argument and uses the configured
+  // key, so passwords never pass through the model's context. on: allowed.
+  vmSshPasswordAuth: (process.env.VM_SSH_PASSWORD_AUTH || "off").toLowerCase(),
 };
 
 // A typo here must not silently change the security posture (an unknown
@@ -80,6 +100,7 @@ export const SECURITY = {
 const ALLOWED_MODES = {
   AUTH_MODE: [SECURITY.authMode, ["enforce", "log", "off"]],
   SHELL_MODE: [SECURITY.shellMode, ["full", "readonly", "off"]],
+  VM_SSH_PASSWORD_AUTH: [SECURITY.vmSshPasswordAuth, ["off", "on"]],
 };
 for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {
   if (!allowed.includes(value)) {

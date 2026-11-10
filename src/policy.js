@@ -18,6 +18,11 @@ export function shellConfirmationReason(args) {
 export function getPolicyBlockReason(tool, args) {
   if (!tool) return null; // callTool reports unknown tools
 
+  // Hard limits set by the server's configuration. Checked first so no shell
+  // mode skips them, and confirm: true can't override them.
+  const refusal = tool.refusalReason?.(args);
+  if (refusal) return refusal;
+
   // Any call that runs a shell command, not just the shell tools, obeys SHELL_MODE.
   const command = tool.shellCommand?.(args);
   if (command != null && SECURITY.shellMode === "off")

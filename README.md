@@ -54,7 +54,7 @@ The server exposes 13 tools.
 | `storage_config` | Manage NFS, SMB, ZFS and LVM storage | `delete`, `zfs_create` |
 | `host_shell` | Run a command on the Proxmox host over SSH | Anything off the read-only allowlist |
 | `lxc_shell` | Run a command inside an LXC via `pct exec` | Anything off the read-only allowlist |
-| `vm_ssh` | SSH into a VM by IP and run a command | Anything off the read-only allowlist |
+| `vm_ssh` | SSH into a VM by IP address and run a command, with the server's SSH key. Targets can be limited with `VM_SSH_ALLOWED_CIDRS`; a `password` argument is refused unless `VM_SSH_PASSWORD_AUTH=on` | Anything off the read-only allowlist |
 | `run_community_script` | Run a [community-scripts.org](https://community-scripts.org) LXC script | Always (runs remote code as root) |
 
 ### MCP annotations
@@ -119,7 +119,9 @@ The server will not start unless the variables marked **required** are set, so a
 | `PROXMOX_SSH_HOST` | **Required.** Host to SSH into |
 | `PROXMOX_SSH_PORT` | Usually `22` |
 | `PROXMOX_SSH_USER` | Usually `root` |
-| `PROXMOX_SSH_KEY` | Path to the private key |
+| `PROXMOX_SSH_KEY` | Path to the private key. `vm_ssh` uses it too |
+| `VM_SSH_ALLOWED_CIDRS` | Comma-separated ranges `vm_ssh` may connect to, e.g. `192.168.10.0/24,10.0.0.0/8`. Unset means any address the server can reach, and the server logs a warning at startup. Set it to your VM subnets |
+| `VM_SSH_PASSWORD_AUTH` | `off` (default): `vm_ssh` refuses a `password` argument and uses `PROXMOX_SSH_KEY`, so passwords never pass through the model's context. `on` allows passwords |
 
 **Server and OAuth**
 

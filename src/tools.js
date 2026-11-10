@@ -1,4 +1,5 @@
-import { CONFIG } from "./config.js";
+import { CONFIG, SECURITY } from "./config.js";
+import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
 import { shellConfirmationReason } from "./policy.js";
@@ -26,6 +27,20 @@ function communityScriptCommand(args) {
 function zfsCommand(args) {
   if (args.action === "zfs_list") return "zfs list";
   if (args.action === "zfs_create") return `zfs ${args.zfsCommand}`;
+  return null;
+}
+
+// Why vm_ssh won't connect, or null if it may. Without these limits vm_ssh
+// could reach any host the server can route to, and a password would pass
+// through the model's context (and the client's transcript) in plain text.
+export function vmSshRefusalReason(args) {
+  if (!ipVersion(args.ip))
+    return `vm_ssh needs a literal IPv4 or IPv6 address, not "${String(args.ip).slice(0, 100)}". Host names are not accepted.`;
+  const allowed = SECURITY.vmSshAllowedCidrs;
+  if (allowed && !cidrListIncludes(allowed, args.ip))
+    return `vm_ssh may not connect to ${args.ip}: it is outside VM_SSH_ALLOWED_CIDRS.`;
+  if (args.password !== undefined && SECURITY.vmSshPasswordAuth !== "on")
+    return "vm_ssh password login is disabled (VM_SSH_PASSWORD_AUTH=off). Leave out the password; the server's configured SSH key is used.";
   return null;
 }
 
@@ -58,6 +73,8 @@ function requireWhen(field, values, required) {
 //   description, inputSchema  advertised to clients via tools/list
 //   annotations               the four MCP hints, always explicit booleans, advertised
 //                             via tools/list so hosts can warn before risky calls
+//   refusalReason(args)       why server configuration refuses this call outright
+//                             (confirm: true can't override it), or null
 //   shellCommand(args)        shell command this call runs, or null (SHELL_MODE applies)
 //   requiredWhen              arguments that only some actions need (requireWhen)
 //   confirmationReason(args)  why this call needs confirm: true, or null
@@ -131,7 +148,7 @@ export const TOOLS = {
   },
 
   vm_ssh: {
-    // Arbitrary commands on any IP the caller names.
+    // Arbitrary commands on an IP the caller names (within VM_SSH_ALLOWED_CIDRS if set).
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -139,20 +156,31 @@ export const TOOLS = {
       openWorldHint: true,
     },
     description:
-      "SSH into a VM by IP and run a command. Commands that aren't plain read-only commands require confirm: true.",
+      "SSH into a VM by IP address and run a command, using the server's SSH key. Commands that aren't plain read-only commands require confirm: true.",
     inputSchema: {
       type: "object",
       properties: {
-        ip: { type: "string" },
+        ip: {
+          type: "string",
+          description: "IPv4 or IPv6 address of the VM (not a host name). The server may limit which ranges are allowed.",
+        },
         username: { type: "string" },
-        password: { type: "string" },
+        password: {
+          type: "string",
+          description:
+            "Only accepted when the server sets VM_SSH_PASSWORD_AUTH=on (off by default). Otherwise leave this out and the server's SSH key is used.",
+        },
         command: { type: "string" },
       },
       required: ["ip", "command"],
     },
+    refusalReason: vmSshRefusalReason,
     shellCommand: (args) => args.command,
     confirmationReason: shellConfirmationReason,
     run: async (args) => {
+      // Checked again here so a direct callTool can't skip the limits.
+      const refusal = vmSshRefusalReason(args);
+      if (refusal) throw new Error(refusal);
       const result = await sshExec(args.command, {
         host: args.ip,
         username: args.username || "root",

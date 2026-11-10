@@ -37,6 +37,11 @@ ssh-copy-id -i ./mcp_key.pub root@your-proxmox-host
 
 Set `PROXMOX_SSH_KEY` to the private key's path and `PROXMOX_SSH_HOST` to the host. If you only want API tools, set `SHELL_MODE=off`. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
 
+`vm_ssh` logs in to VMs with the same key, so add the public key to each VM you want it to reach (`ssh-copy-id -i ./mcp_key.pub root@<vm-ip>`). Two settings limit it:
+
+- `VM_SSH_ALLOWED_CIDRS`: the address ranges `vm_ssh` may connect to, for example `192.168.10.0/24`. Without it, `vm_ssh` can reach any address the server can route to, including your Proxmox host and other machines on the network, and the server logs a warning at startup.
+- `VM_SSH_PASSWORD_AUTH`: `off` by default, which means a `password` argument is refused. Passwords given to `vm_ssh` would pass through the model's context and the client's chat history, so use the key. Set `on` only if you accept that.
+
 ## 3. Set up Authentik
 
 In Authentik, create an **OAuth2/OpenID Provider** and an **Application** that uses it:
