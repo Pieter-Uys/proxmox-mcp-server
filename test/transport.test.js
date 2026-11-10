@@ -1,0 +1,122 @@
+import "./env.js";
+import test from "node:test";
+import assert from "node:assert/strict";
+import express from "express";
+import { mcpRouter } from "../src/routes/mcp.js";
+import { handleJsonRpc } from "../src/jsonrpc.js";
+import { SECURITY } from "../src/config.js";
+
+// A real Express app with the MCP router, on a loopback port. Auth is off for
+// these tests (they are about transport, not login), restored afterwards.
+async function withApp(fn) {
+  const previousAuth = SECURITY.authMode;
+  SECURITY.authMode = "off";
+  const app = express();
+  app.use(mcpRouter);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn(base);
+  } finally {
+    server.close();
+    SECURITY.authMode = previousAuth;
+  }
+}
+const post = (base, body) =>
+  fetch(`${base}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+// ─── M9: no batches ─────────────────────────────────────────────────────────
+test("a JSON-RPC batch is refused as an invalid request, without running any entry", async () => {
+  await withApp(async (base) => {
+    const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
+    for (const body of [[ping, ping], [ping], []]) {
+      const response = await post(base, body);
+      assert.equal(response.status, 400, JSON.stringify(body));
+      const reply = await response.json();
+      assert.equal(reply.error.code, -32600);
+      assert.match(reply.error.message, /[Bb]atch/);
+    }
+  });
+});
+
+test("a single request still works", async () => {
+  await withApp(async (base) => {
+    const reply = await (await post(base, { jsonrpc: "2.0", id: 7, method: "ping" })).json();
+    assert.deepEqual(reply, { jsonrpc: "2.0", id: 7, result: {} });
+  });
+});
+
+// ─── L4: legacy SSE routes are gone ─────────────────────────────────────────
+test("the legacy /sse and /messages routes no longer exist", async () => {
+  await withApp(async (base) => {
+    assert.equal((await fetch(`${base}/sse`)).status, 404);
+    assert.equal((await fetch(`${base}/messages`, { method: "POST" })).status, 404);
+  });
+});
+
+// ─── L9: logs never carry request or response body text ────────────────────
+test("request logging names the method, tool and id, never body text", async () => {
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  try {
+    await withApp(async (base) => {
+      await post(base, {
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: { name: "vm_ssh", arguments: { password: "hunter2-secret", ip: "not-an-ip", command: "uptime" } },
+      });
+    });
+  } finally {
+    console.log = realLog;
+  }
+  const output = lines.join("\n");
+  assert.doesNotMatch(output, /hunter2-secret/);
+  assert.doesNotMatch(output, /not-an-ip/);
+  assert.match(output, /tools\/call/);
+  assert.match(output, /vm_ssh/);
+});
+
+// ─── L6: notifications never get a response ─────────────────────────────────
+test("a notification gets no response, even for an unknown method", async () => {
+  assert.equal(await handleJsonRpc({ jsonrpc: "2.0", method: "notifications/whatever" }), null);
+  assert.equal(await handleJsonRpc({ jsonrpc: "2.0", method: "ping" }), null);
+  const reply = await handleJsonRpc({ jsonrpc: "2.0", id: 1, method: "nope" });
+  assert.equal(reply.error.code, -32601, "a request with an id still gets Method not found");
+});
+
+// ─── L5: tool failures are tool results the model can read ─────────────────
+test("a tool that fails while running returns isError, not a JSON-RPC error", async () => {
+  // proxmox_api with a path that fails the safety check throws inside run().
+  const reply = await handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: { name: "proxmox_api", arguments: { method: "GET", path: "/../../etc" } },
+  });
+  assert.equal(reply.error, undefined);
+  assert.equal(reply.result.isError, true);
+  assert.match(reply.result.content[0].text, /Invalid Proxmox API path/);
+});
+
+test("a malformed JSON body is logged without quoting any of it", async () => {
+  const lines = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try {
+    await withApp(async (base) => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: '{"password": "hunter2-secret", oops',
+      });
+      assert.equal((await response.json()).error.code, -32700);
+    });
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.doesNotMatch(lines.join("\n"), /hunter2-secret/);
+  assert.match(lines.join("\n"), /malformed JSON body/);
+});

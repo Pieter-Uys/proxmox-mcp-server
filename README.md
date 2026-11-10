@@ -74,7 +74,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 
 | Layer | What it does |
 | --- | --- |
-| **Authentication** | Every `/mcp`, `/sse` and `/messages` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
+| **Authentication** | Every `/mcp` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
 | **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
@@ -99,6 +99,8 @@ The server refuses to start if any of these has an unrecognised value, or if `VM
 - **`confirm: true` is a speed bump, not a hard boundary.** The model sets it. It works alongside the client's own tool-approval prompts and the audit trail.
 - **Set `PROXMOX_SSH_HOST_KEY`**, and narrow `VM_SSH_ALLOWED_CIDRS` to your VM subnets. The default allows every private range, which includes the Proxmox host and the rest of your LAN.
 - **Pin community scripts** with `COMMUNITY_SCRIPTS_REF` if you use `run_community_script`, or disable shell tools if you don't.
+- **One JSON-RPC request per POST.** Batches (a JSON array) are refused with Invalid Request, as in MCP revision 2025-06-18, so one HTTP request can't fan out into many tool calls. Notifications never get a reply. A tool that fails while running returns a result with `isError: true`, so the model can see what went wrong.
+- **Proxmox API calls time out after 30 seconds** and fail if the reply is larger than 5 MiB, with a message to narrow the query.
 - **CORS allows any origin** (`Access-Control-Allow-Origin: *`). This is deliberate: clients send a bearer token in the `Authorization` header and the server sets no cookies, so a page on another origin has no ambient credentials to abuse. If you only expect specific browser-based clients, tighten it in `server.js`.
 
 ### Residual risks
@@ -211,7 +213,7 @@ src/
   audit.js                JSON Lines audit log with secret redaction
   utils.js                Small shared helpers
   routes/
-    mcp.js                MCP transports: /mcp, /sse, /messages
+    mcp.js                MCP transport: POST /mcp (one request per POST, no batches) and GET /mcp
     oauth.js              OAuth discovery and proxy endpoints
     middleware.js         Body parsing, async handler wrapper, error handlers
 test/                     Unit tests (npm test)

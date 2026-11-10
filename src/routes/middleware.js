@@ -21,7 +21,9 @@ function createErrorHandler(formatBody) {
     if (res.headersSent) return next(error);
     const status = error.status || error.statusCode || 500;
     const isClientError = status >= 400 && status < 500;
-    if (isClientError) console.warn(`Rejected request to ${forLog(req.path)}: ${forLog(error.message)}`);
+    // A JSON parse error quotes part of the body, which can hold secrets.
+    const summary = error.type === "entity.parse.failed" ? "malformed JSON body" : error.message;
+    if (isClientError) console.warn(`Rejected request to ${forLog(req.path)}: ${forLog(summary)}`);
     else console.error(`Unhandled error on ${forLog(req.path)}:`, error);
     res.status(status).json(formatBody(error, isClientError));
   };
