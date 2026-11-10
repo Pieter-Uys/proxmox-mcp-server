@@ -68,7 +68,10 @@ export function vmSshRefusalReason(args) {
     return "vm_ssh password login is disabled (VM_SSH_PASSWORD_AUTH=off). Leave out the password; the server's configured SSH key is used.";
   // Without a pinned host key the password goes to whichever machine answers
   // at that address, so it is only sent to a host that proves who it is.
-  if (args.password !== undefined && args.hostKey === undefined)
+  // Checked here as well as by the schema: run() calls this for direct
+  // callTool use, which skips schema validation, and an empty hostKey would
+  // otherwise mean no host verifier at all.
+  if (args.password !== undefined && !(typeof args.hostKey === "string" && HOST_KEY_FINGERPRINT.test(args.hostKey)))
     return "vm_ssh sends a password only to a pinned host. Add hostKey (the VM's SHA256 fingerprint, from ssh-keyscan <ip> | ssh-keygen -lf -), or leave out the password.";
   return null;
 }

@@ -6,8 +6,9 @@ export const SSH_CONNECT_TIMEOUT_MS = 15 * 1000;
 // Community script installs download packages and build containers, which
 // takes minutes, so they get their own limit.
 export const COMMUNITY_SCRIPT_TIMEOUT_MS = 20 * 60 * 1000;
-// Output kept per command, stdout and stderr together. More is cut off and the
-// command stopped, so `cat /dev/zero` can't exhaust the server's memory.
+// Output kept per command, stdout and stderr together. Past it the channel is
+// closed and the output cut off, so `cat /dev/zero` can't exhaust the server's
+// memory. The remote command is not killed and may keep running.
 export const SSH_MAX_OUTPUT_BYTES = 1024 * 1024;
 // An OpenSSH host key fingerprint, as printed by `ssh-keygen -lf`.
 export const HOST_KEY_FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}=?$/;

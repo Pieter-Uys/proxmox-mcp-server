@@ -172,6 +172,25 @@ test("vm_ssh: by default only private ranges are reachable", () => {
   }
 });
 
+test("vm_ssh: the password gate needs a real fingerprint, even when the schema is skipped", async () => {
+  // run() re-checks vmSshRefusalReason for direct callTool use, which skips
+  // schema validation, so the gate itself must reject empty or odd hostKeys.
+  await withSecurity({ vmSshPasswordAuth: "on" }, async () => {
+    for (const hostKey of ["", null, 0, false, "SHA256:short", ["SHA256:" + "A".repeat(43)]]) {
+      assert.match(
+        vmSshBlock({ ip: "10.0.0.5", password: "hunter2", hostKey, confirm: true }) ?? "",
+        /only to a pinned host/,
+        JSON.stringify(hostKey),
+      );
+      await assert.rejects(
+        callTool("vm_ssh", { ip: "10.0.0.5", command: "uptime", password: "hunter2", hostKey }),
+        /only to a pinned host/,
+        JSON.stringify(hostKey),
+      );
+    }
+  });
+});
+
 test("vm_ssh: hostKey must be an OpenSSH SHA256 fingerprint", () => {
   assert.deepEqual(problems("vm_ssh", { ip: "10.0.0.5", command: "uptime", hostKey: FINGERPRINT }), []);
   for (const hostKey of ["MD5:aa:bb", "SHA256:short", `${FINGERPRINT}; reboot`, "ssh-ed25519 AAAA"]) {
