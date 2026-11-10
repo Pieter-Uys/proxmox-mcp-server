@@ -163,7 +163,7 @@ const SENSITIVE_READS = {
     grep -f /etc/shadow /var/log/syslog
     grep -f/etc/shadow /var/log/syslog
     grep --file=/etc/shadow /var/log/syslog
-    journalctl --file=/var/lib/pve-cluster/config.db
+    find /var -newer /etc/shadow
   `),
   "recursive grep, which would reach secrets without naming them": lines(`
     grep -r password /etc
@@ -335,4 +335,164 @@ test("off mode: tools that don't run shell commands are unaffected", async () =>
 
 test("unknown tool is left for callTool to report", () => {
   assert.equal(getPolicyBlockReason(undefined, {}), null);
+});
+
+// ─── Exact option allowlists (audit H1, H4) ─────────────────────────────────
+const STATE_CHANGING_OPTIONS = {
+  "ss writes or kills": lines(`
+    ss -D /etc/network/interfaces
+    ss --diag=/etc/hosts
+    ss --diag /etc/hosts
+    ss -tlnD /tmp/x
+    ss --kil
+    ss --ki
+    ss -F /etc/shadow
+    ss -N other
+    ss -E
+  `),
+  "journalctl maintenance, including abbreviations": lines(`
+    journalctl --rot
+    journalctl --flu
+    journalctl --vacuum-t=1s
+    journalctl --setup
+    journalctl --sync
+    journalctl --relinquish
+    journalctl --update-cat
+    journalctl --file=/var/lib/pve-cluster/config.db
+    journalctl -D /var/log/journal
+  `),
+  "sensors set and config forms": lines(`
+    sensors --se
+    sensors -s
+    sensors -c /etc/sensors3.conf
+  `),
+  "systemctl reaching other machines or changing state": lines(`
+    systemctl status --host=root@other
+    systemctl status -H root@other
+    systemctl status --machine=foo
+    systemctl list-units -M foo
+    systemctl status --root=/mnt
+  `),
+  "find predicates outside the named set": lines(`
+    find / -delet
+    find / -execdir id
+    find / -fls /tmp/x
+    find / -newerXY x
+  `),
+  "zfs, zpool, pvesm, qm and pct options they don't name": lines(`
+    zfs list -bogus
+    zfs list --bogus
+    zpool status 1
+    zpool status -T d 1
+    zpool list 5
+    pvesm status --delete local
+    qm config 100 --delete net0
+    qm config abc
+    pct config 101 --bogus
+    qm list --bogus
+  `),
+  "follow modes that hold the connection open (H4)": lines(`
+    tail -f /var/log/syslog
+    tail -F /var/log/syslog
+    tail -qf /var/log/syslog
+    tail --follow /var/log/syslog
+    tail --follow=name /var/log/syslog
+    tail --retry /var/log/syslog
+    tail -s 1 /var/log/syslog
+    journalctl -f
+    journalctl --follow
+    journalctl -fu pveproxy
+    journalctl -u pveproxy -f
+  `),
+};
+
+for (const [group, commands] of Object.entries(STATE_CHANGING_OPTIONS)) {
+  test(`read-only allowlist refuses ${group}`, () => {
+    for (const command of commands) {
+      assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+    }
+  });
+}
+
+test("commands with option rules refuse an option they don't name", () => {
+  for (const base of [
+    "ss",
+    "journalctl",
+    "sensors",
+    "systemctl status pveproxy",
+    "find /var/log",
+    "tail /var/log/syslog",
+    "zfs list",
+    "zpool status",
+    "zpool list",
+    "pvesm status",
+    "qm list",
+    "qm config 100",
+    "qm status 100",
+    "pct list",
+    "pct config 101",
+    "pct status 101",
+  ]) {
+    for (const option of ["--definitely-not-an-option", "-Q"]) {
+      assert.equal(isReadonlyCommand(`${base} ${option}`), false, `should refuse: ${base} ${option}`);
+    }
+  }
+});
+
+test("everyday read options keep working under the exact allowlists", () => {
+  for (const command of lines(`
+    ss -tlnp
+    ss -tunap
+    ss -s
+    ss --tcp --listening --numeric --processes
+    ss -tn state established
+    ss -A tcp
+    journalctl -u pveproxy -n 50
+    journalctl -u pveproxy --since=today --no-pager
+    journalctl -b -1 -p err
+    journalctl -k -n 100
+    journalctl --list-boots
+    journalctl --disk-usage
+    journalctl -o json -n 5
+    journalctl -xe --no-pager
+    sensors
+    sensors -j
+    sensors -u coretemp-isa-0000
+    systemctl status pveproxy
+    systemctl status pveproxy --no-pager -l
+    systemctl list-units --type=service --state=running
+    systemctl list-units -t service --failed
+    systemctl is-active pveproxy
+    find /var/log -name syslog
+    find /var/log -type f -mtime -7 -size +1M
+    find /etc/pve -maxdepth 1 -type d
+    find / -xdev -name core -print
+    tail /var/log/syslog
+    tail -n 100 /var/log/syslog
+    tail -n100 /var/log/syslog
+    tail -100 /var/log/syslog
+    tail -c 4096 /var/log/syslog
+    tail --lines=20 /var/log/syslog
+    zfs list
+    zfs list -t snapshot -o name,used
+    zfs list -rH tank
+    zpool status
+    zpool status -x
+    zpool status -v tank
+    zpool list -H -o name,size
+    pvesm status
+    pvesm status --storage local
+    pvesm status --content images
+    qm list
+    qm list --full 1
+    qm config 100
+    qm config 100 --current
+    qm config 100 --snapshot before-upgrade
+    qm status 100 --verbose
+    pct list
+    pct config 101
+    pct status 101
+  `)) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
 });
