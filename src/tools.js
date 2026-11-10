@@ -1,4 +1,5 @@
 import { CONFIG, SECURITY } from "./config.js";
+import { COMMUNITY_SCRIPT_TIMEOUT_MS, HOST_KEY_FINGERPRINT } from "./constants.js";
 import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
@@ -65,6 +66,13 @@ export function vmSshRefusalReason(args) {
     return `vm_ssh may not connect to ${args.ip}: it is outside VM_SSH_ALLOWED_CIDRS.`;
   if (args.password !== undefined && SECURITY.vmSshPasswordAuth !== "on")
     return "vm_ssh password login is disabled (VM_SSH_PASSWORD_AUTH=off). Leave out the password; the server's configured SSH key is used.";
+  // Without a pinned host key the password goes to whichever machine answers
+  // at that address, so it is only sent to a host that proves who it is.
+  // Checked here as well as by the schema: run() calls this for direct
+  // callTool use, which skips schema validation, and an empty hostKey would
+  // otherwise mean no host verifier at all.
+  if (args.password !== undefined && !(typeof args.hostKey === "string" && HOST_KEY_FINGERPRINT.test(args.hostKey)))
+    return "vm_ssh sends a password only to a pinned host. Add hostKey (the VM's SHA256 fingerprint, from ssh-keyscan <ip> | ssh-keygen -lf -), or leave out the password.";
   return null;
 }
 
@@ -181,7 +189,7 @@ export const TOOLS = {
       openWorldHint: true,
     },
     description:
-      "SSH into a VM by IP address and run a command, using the server's SSH key. Commands that aren't plain read-only commands require confirm: true.",
+      "SSH into a VM by IP address and run a command, using the server's SSH key. Commands that aren't plain read-only commands require confirm: true. The VM's host key is only checked when hostKey is given.",
     inputSchema: {
       type: "object",
       properties: {
@@ -194,6 +202,12 @@ export const TOOLS = {
           type: "string",
           description:
             "Only accepted when the server sets VM_SSH_PASSWORD_AUTH=on (off by default). Otherwise leave this out and the server's SSH key is used.",
+        },
+        hostKey: {
+          type: "string",
+          pattern: HOST_KEY_FINGERPRINT.source,
+          description:
+            "Optional SHA256 host key fingerprint of the VM (SHA256:...). When given, the connection is refused if the VM presents a different key. Required with password.",
         },
         command: { type: "string" },
       },
@@ -210,6 +224,7 @@ export const TOOLS = {
         host: args.ip,
         username: args.username || "root",
         password: args.password,
+        hostKey: args.hostKey,
       });
       return formatCommandResult(result);
     },
@@ -224,7 +239,7 @@ export const TOOLS = {
       openWorldHint: true,
     },
     description:
-      "Run a community-scripts.org LXC script on Proxmox. Always requires confirm: true (downloads and runs remote code as root).",
+      "Run a community-scripts.org LXC script on Proxmox. Always requires confirm: true (downloads and runs remote code as root). Untested through this server: it runs without a terminal (these scripts normally expect one) and stops after 20 minutes, which may leave an install half done.",
     inputSchema: {
       type: "object",
       properties: {
@@ -242,7 +257,7 @@ export const TOOLS = {
       const { url, ref, pinned } = communityScriptSource(args.script);
       return { scriptUrl: url, scriptRef: ref, scriptPinned: pinned };
     },
-    run: (args) => runOnHost(communityScriptCommand(args)),
+    run: (args) => runOnHost(communityScriptCommand(args), { timeoutMs: COMMUNITY_SCRIPT_TIMEOUT_MS }),
   },
 
   get_status: {

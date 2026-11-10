@@ -126,6 +126,7 @@ async function withSecurity(overrides, fn) {
     Object.assign(SECURITY, previous);
   }
 }
+const FINGERPRINT = "SHA256:" + "A".repeat(43);
 const vmSshBlock = (args) => getPolicyBlockReason(TOOLS.vm_ssh, { command: "uptime", ...args });
 
 test("vm_ssh: only literal IP addresses are accepted, never host names", () => {
@@ -162,10 +163,39 @@ test("vm_ssh: the allowlist also applies in SHELL_MODE=readonly", async () => {
   });
 });
 
-test("vm_ssh: with no allowlist, any literal address is accepted (behaviour unchanged)", async () => {
-  await withSecurity({ vmSshAllowedCidrs: null }, () => {
-    assert.equal(vmSshBlock({ ip: "8.8.8.8" }), null);
+test("vm_ssh: by default only private ranges are reachable", () => {
+  for (const ip of ["10.0.0.5", "172.16.4.2", "192.168.1.20", "fd00::5"]) {
+    assert.equal(vmSshBlock({ ip }), null, ip);
+  }
+  for (const ip of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "2001:db8::1", "127.0.0.1", "169.254.169.254"]) {
+    assert.match(vmSshBlock({ ip, confirm: true }), /outside VM_SSH_ALLOWED_CIDRS/, ip);
+  }
+});
+
+test("vm_ssh: the password gate needs a real fingerprint, even when the schema is skipped", async () => {
+  // run() re-checks vmSshRefusalReason for direct callTool use, which skips
+  // schema validation, so the gate itself must reject empty or odd hostKeys.
+  await withSecurity({ vmSshPasswordAuth: "on" }, async () => {
+    for (const hostKey of ["", null, 0, false, "SHA256:short", ["SHA256:" + "A".repeat(43)]]) {
+      assert.match(
+        vmSshBlock({ ip: "10.0.0.5", password: "hunter2", hostKey, confirm: true }) ?? "",
+        /only to a pinned host/,
+        JSON.stringify(hostKey),
+      );
+      await assert.rejects(
+        callTool("vm_ssh", { ip: "10.0.0.5", command: "uptime", password: "hunter2", hostKey }),
+        /only to a pinned host/,
+        JSON.stringify(hostKey),
+      );
+    }
   });
+});
+
+test("vm_ssh: hostKey must be an OpenSSH SHA256 fingerprint", () => {
+  assert.deepEqual(problems("vm_ssh", { ip: "10.0.0.5", command: "uptime", hostKey: FINGERPRINT }), []);
+  for (const hostKey of ["MD5:aa:bb", "SHA256:short", `${FINGERPRINT}; reboot`, "ssh-ed25519 AAAA"]) {
+    assert.ok(problems("vm_ssh", { ip: "10.0.0.5", command: "uptime", hostKey }).length, hostKey);
+  }
 });
 
 test("vm_ssh: a password is refused unless VM_SSH_PASSWORD_AUTH=on", async () => {
@@ -175,7 +205,8 @@ test("vm_ssh: a password is refused unless VM_SSH_PASSWORD_AUTH=on", async () =>
     assert.equal(vmSshBlock({ ip: "10.0.0.5" }), null);
   });
   await withSecurity({ vmSshPasswordAuth: "on" }, () => {
-    assert.equal(vmSshBlock({ ip: "10.0.0.5", password: "hunter2" }), null);
+    assert.equal(vmSshBlock({ ip: "10.0.0.5", password: "hunter2", hostKey: FINGERPRINT }), null);
+    assert.match(vmSshBlock({ ip: "10.0.0.5", password: "hunter2", confirm: true }), /only to a pinned host/);
   });
 });
 
