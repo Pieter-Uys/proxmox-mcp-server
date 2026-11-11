@@ -67,7 +67,7 @@ Set `PROXMOX_SSH_KEY` to the private key's path and `PROXMOX_SSH_HOST` to the ho
 Pin the host's own key so the server can't be talked into connecting to an impostor. On a machine that already trusts the host (or on the host itself), run:
 
 ```
-ssh-keyscan your-proxmox-host | ssh-keygen -lf -
+ssh-keyscan -p 22 your-proxmox-host | ssh-keygen -lf -   # use your PROXMOX_SSH_PORT
 ```
 
 and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). The server refuses to start without it while shell tools are enabled. `ALLOW_UNPINNED_SSH_HOST=yes` skips the check, which means any machine that answers as the host gets every shell command.
