@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isReadonlyCommand, getPolicyBlockReason } from "../src/policy.js";
+import { isReadonlyCommand, getPolicyBlockReason, withSafePsEnvironment } from "../src/policy.js";
 import { SECURITY } from "../src/config.js";
 import { TOOLS } from "../src/tools.js";
 
@@ -813,5 +813,19 @@ test("the deny list still refuses secret files when READONLY_PATHS is widened", 
     assert.equal(isReadonlyCommand("cat /opt/app/README"), true);
   } finally {
     SECURITY.readonlyPaths = previous;
+  }
+});
+
+// ps reads its parsing personality from the environment (procps global.c:
+// PS_PERSONALITY, CMD_ENV, I_WANT_A_BROKEN_PS), and "bsd" parses every word in
+// BSD mode, where -e prints environments. A guest controls its own
+// environment, so ps always runs with those variables unset.
+test("ps runs with its personality variables unset", () => {
+  const env = "env -u PS_PERSONALITY -u CMD_ENV -u I_WANT_A_BROKEN_PS";
+  assert.equal(withSafePsEnvironment("ps -ef"), `${env} ps -ef`);
+  assert.equal(withSafePsEnvironment("  ps aux"), `${env} ps aux`);
+  assert.equal(withSafePsEnvironment("ps"), `${env} ps`);
+  for (const command of ["psql -l", "uptime", "echo ps", "pstree"]) {
+    assert.equal(withSafePsEnvironment(command), command);
   }
 });
