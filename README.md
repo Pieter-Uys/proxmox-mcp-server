@@ -44,7 +44,7 @@ The server exposes 13 tools.
 | Tool | What it does | Needs `confirm: true` for |
 | --- | --- | --- |
 | `get_status` | Cluster, node, VM, LXC and storage status | Never (read-only) |
-| `proxmox_api` | Any Proxmox REST API call | Every non-GET call |
+| `proxmox_api` | Any Proxmox REST API call | Every non-GET call, and GETs that read guest files or secrets (see below) |
 | `manage_vm` | Start, stop, restart, shut down or delete a VM or LXC | Every action |
 | `create_lxc` | Create a new LXC container | Always |
 | `backup_vm` | Back up a VM or LXC | Always |
@@ -75,7 +75,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Layer | What it does |
 | --- | --- |
 | **Authentication** | Every `/mcp` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
-| **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls, GETs that read guest files or secrets (the QEMU guest agent, `cloudinit/dump`, backup `file-restore`, and `scan`, which makes the host probe targets; a list of known cases, not a guarantee), and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
 | **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds (community scripts after 20 minutes), and a timeout says the command may still be running. |
@@ -216,6 +216,7 @@ src/
   constants.js            Timeouts, cache TTLs and limits
   tools.js                Every MCP tool (schema, confirmation rule, implementation) and callTool
   policy.js               SHELL_MODE enforcement and the read-only command allowlist
+  apiPolicy.js            Proxmox GET paths that need confirmation
   validate.js             Tool argument validation against each tool's input schema
   jsonrpc.js              MCP JSON-RPC method handling and tool-call auditing
   rpc.js                  JSON-RPC 2.0 result and error helpers

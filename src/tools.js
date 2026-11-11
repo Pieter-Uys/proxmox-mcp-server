@@ -4,6 +4,7 @@ import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
 import { shellConfirmationReason } from "./policy.js";
+import { sensitiveGetReason } from "./apiPolicy.js";
 import { pick } from "./utils.js";
 
 // ─── Tools ──────────────────────────────────────────────────────────────────
@@ -145,7 +146,7 @@ export const TOOLS = {
       openWorldHint: false,
     },
     description:
-      "Make any Proxmox REST API call. Anything other than GET requires confirm: true.",
+      "Make any Proxmox REST API call. Anything other than GET requires confirm: true, as do GETs that read guest files or secrets (guest agent, cloud-init dump, file-restore, scan).",
     inputSchema: {
       type: "object",
       properties: {
@@ -156,7 +157,7 @@ export const TOOLS = {
       required: ["method", "path"],
     },
     confirmationReason: (args) =>
-      args.method === "GET" ? null : `${args.method} API calls change the system.`,
+      args.method === "GET" ? sensitiveGetReason(args.path) : `${args.method} API calls change the system.`,
     run: (args) => proxmoxRequest(args.method, args.path, args.body),
   },
 
