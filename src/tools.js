@@ -3,7 +3,7 @@ import { COMMUNITY_SCRIPT_TIMEOUT_MS, HOST_KEY_FINGERPRINT } from "./constants.j
 import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
-import { shellConfirmationReason } from "./policy.js";
+import { shellConfirmationReason, shellConfirmationReasonFor } from "./policy.js";
 import { sensitiveGetReason } from "./apiPolicy.js";
 import { pick } from "./utils.js";
 
@@ -197,7 +197,8 @@ export const TOOLS = {
       required: ["vmid", "command"],
     },
     shellCommand: (args) => args.command,
-    confirmationReason: shellConfirmationReason,
+    shellContext: "guest",
+    confirmationReason: shellConfirmationReasonFor("guest"),
     run: (args) =>
       runOnHost(
         `pct exec ${args.vmid} -- bash -c ${shellQuote(args.command)}`,
@@ -239,7 +240,8 @@ export const TOOLS = {
     },
     refusalReason: vmSshRefusalReason,
     shellCommand: (args) => args.command,
-    confirmationReason: shellConfirmationReason,
+    shellContext: "guest",
+    confirmationReason: shellConfirmationReasonFor("guest"),
     run: async (args) => {
       // Checked again here so a direct callTool can't skip the limits.
       const refusal = vmSshRefusalReason(args);

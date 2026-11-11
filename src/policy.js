@@ -5,13 +5,13 @@ import { SECURITY } from "./config.js";
 // Any command the read-only allowlist doesn't accept needs confirm: true.
 // A list of known-dangerous commands can never be complete (find -delete,
 // ip link set down, lvremove, qm set --delete, ...), so approval is the default.
-export function shellConfirmationReason(args) {
-  const command = String(args.command || "");
-  if (isReadonlyCommand(command)) return null;
-  return readsSensitivePathOnly(command)
-    ? "This command reads a path that can hold secrets (keys, password hashes, cluster credentials)."
-    : "This command isn't on the read-only list, so it could change the system.";
+//
+// `context` is "host" for commands on the Proxmox host and "guest" for
+// commands inside a container or VM, where file reads are gated more tightly.
+export function shellConfirmationReasonFor(context) {
+  return (args) => readonlyRefusal(String(args.command || ""), context);
 }
+export const shellConfirmationReason = shellConfirmationReasonFor("host");
 
 // ─── Policy: shell mode and destructive-action confirmation ─────────────────
 // Returns a reason string if server policy blocks this call, or null if it may run.
@@ -28,7 +28,7 @@ export function getPolicyBlockReason(tool, args) {
   if (command != null && SECURITY.shellMode === "off")
     return "Shell commands are disabled (SHELL_MODE=off).";
   if (command != null && SECURITY.shellMode === "readonly") {
-    return isReadonlyCommand(command)
+    return isReadonlyCommand(command, tool.shellContext)
       ? null
       : "Only single read-only commands with read-only options are allowed (SHELL_MODE=readonly).";
   }
@@ -50,11 +50,24 @@ export function getPolicyBlockReason(tool, args) {
 // `find / -delete`, `ip link set eth0 down` and similar.
 const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
-// A command that reads a sensitive path is never read-only in the sense that
-// matters here: it needs confirm: true, and SHELL_MODE=readonly refuses it.
-export function isReadonlyCommand(command) {
+// A command that reads a sensitive path, or file contents outside the readable
+// roots, is never read-only in the sense that matters here: it needs
+// confirm: true, and SHELL_MODE=readonly refuses it.
+export function isReadonlyCommand(command, context = "host") {
+  return readonlyRefusal(command, context) === null;
+}
+
+// Why the command needs approval, or null if it is read-only. Checked in this
+// order so the reason describes the real risk: a command that could change
+// something is never described as a read.
+function readonlyRefusal(command, context = "host") {
   const words = plainWords(command);
-  return words !== null && passesAllowlist(words) && !touchesSensitivePath(words[0], words.slice(1));
+  if (words === null || !passesAllowlist(words))
+    return "This command isn't on the read-only list, so it could change the system.";
+  const [name, ...args] = words;
+  if (touchesSensitivePath(name, args))
+    return "This command reads a path that can hold secrets (keys, password hashes, cluster credentials).";
+  return contentReadRefusal(name, args, context);
 }
 
 // True if the command's own rule accepts its arguments, before the
@@ -69,12 +82,120 @@ function plainWords(command) {
   return words.every((word) => PLAIN_WORD.test(word)) ? words : null;
 }
 
-// True if the command would be read-only but for a sensitive path. Commands
-// that could also change something (rm, chmod) get the general reason instead,
-// so the approval text never calls a delete a read.
-function readsSensitivePathOnly(command) {
-  const words = plainWords(command);
-  return words !== null && passesAllowlist(words) && touchesSensitivePath(words[0], words.slice(1));
+// ─── Readable roots for file contents ───────────────────────────────────────
+// The deny list above names known secret locations, but a list of secrets can
+// never be complete (.netrc, .pgpass, keyrings, wireguard configs, ...). So the
+// commands that print file contents are read-only only for files under
+// READONLY_PATHS, on the host. Inside a container or VM, secrets can be
+// anywhere, so every file read there needs approval. ls, stat, find and du,
+// which show names and sizes rather than contents, are unaffected.
+function contentReadRefusal(name, args, context) {
+  if (!CONTENT_READERS.has(name)) return null;
+  const files = fileOperands(name, args);
+  if (files === null)
+    return `This command uses a ${name} option the read check doesn't know, so it can't tell which files it reads.`;
+  if (files.length === 0) return null; // reads stdin, which is empty over SSH
+  if (context === "guest")
+    return "File reads inside a container or VM need approval: secrets there can be anywhere.";
+  if (files.some((file) => !file.startsWith("/")))
+    return "This command reads a file by relative path; use an absolute path under READONLY_PATHS, or approve the read.";
+  const roots = SECURITY.readonlyPaths.map((root) => root.split("/").filter(Boolean));
+  const outside = files.find((file) => !roots.some((root) => startsWithSegments(pathSegments(file), root)));
+  return outside
+    ? `This command reads ${outside.slice(0, 120)}, which is outside READONLY_PATHS (${SECURITY.readonlyPaths.join(", ")}).`
+    : null;
+}
+
+// The files a content reader would open, or null if an option is unknown. Option values are skipped (head -n
+// 5), except values that are themselves files (grep -f FILE).
+//
+// Getting this wrong in one direction is safe (an option value counted as a
+// file only adds a prompt) and in the other is a bypass (a file swallowed as a
+// value is never checked). So only options whose value is required in the
+// real program take one; --color's value is optional and attached only, so
+// it is a flag here. Long options must match exactly: GNU tools accept
+// abbreviations (--regex for --regexp), and an unknown one could change how
+// the rest of the line parses, so it makes the command need approval.
+const READER_OPTIONS = {
+  cat: {
+    valued: "",
+    fileValued: "",
+    longFlags: ["--number", "--number-nonblank", "--show-all", "--show-ends", "--show-tabs", "--squeeze-blank", "--show-nonprinting"],
+    longValued: [],
+    fileLongValued: [],
+  },
+  head: {
+    valued: "nc",
+    fileValued: "",
+    longFlags: ["--quiet", "--silent", "--verbose", "--zero-terminated"],
+    longValued: ["--lines", "--bytes"],
+    fileLongValued: [],
+  },
+  tail: {
+    valued: "nc",
+    fileValued: "",
+    longFlags: ["--quiet", "--silent", "--verbose", "--zero-terminated"],
+    longValued: ["--lines", "--bytes"],
+    fileLongValued: [],
+  },
+  grep: {
+    valued: "emABCdD",
+    fileValued: "f",
+    longFlags: [
+      "--ignore-case", "--no-ignore-case", "--invert-match", "--word-regexp", "--line-regexp", "--count",
+      "--files-with-matches", "--files-without-match", "--only-matching", "--quiet", "--silent",
+      "--no-messages", "--byte-offset", "--with-filename", "--no-filename", "--line-number", "--initial-tab",
+      "--null", "--null-data", "--text", "--extended-regexp", "--fixed-strings", "--basic-regexp",
+      "--perl-regexp", "--line-buffered", "--color", "--colour",
+    ],
+    longValued: [
+      "--regexp", "--max-count", "--after-context", "--before-context", "--context", "--directories",
+      "--devices", "--include", "--exclude", "--exclude-dir", "--label", "--group-separator",
+    ],
+    fileLongValued: ["--file", "--exclude-from"],
+  },
+};
+
+function fileOperands(name, args) {
+  const spec = READER_OPTIONS[name];
+  const operands = [];
+  const files = [];
+  let patternGiven = false; // grep -e/-f: then every operand is a file
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--") {
+      operands.push(...args.slice(index + 1));
+      break;
+    }
+    if (arg.startsWith("--")) {
+      const [option, attached] = splitLongOption(arg);
+      if (spec.longFlags.includes(option)) continue; // --color=auto keeps its attached value
+      const isFile = spec.fileLongValued.includes(option);
+      if (!isFile && !spec.longValued.includes(option)) return null;
+      const value = attached ?? args[++index];
+      if (option === "--regexp" || isFile) patternGiven = true;
+      if (isFile && value !== undefined) files.push(value);
+      continue;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (/^-\d+$/.test(arg)) continue; // head -20, tail -100
+      for (let position = 1; position < arg.length; position++) {
+        const letter = arg[position];
+        const isFile = spec.fileValued.includes(letter);
+        if (!isFile && !spec.valued.includes(letter)) continue;
+        const attached = arg.slice(position + 1);
+        const value = attached || args[++index];
+        if (letter === "e" || isFile) patternGiven = true;
+        if (isFile && value !== undefined) files.push(value);
+        break;
+      }
+      continue;
+    }
+    if (arg !== "-") operands.push(arg);
+  }
+  // grep's first operand is the pattern unless -e or -f gave one.
+  if (name === "grep" && !patternGiven) operands.shift();
+  return [...files, ...operands];
 }
 
 // ─── Sensitive paths ────────────────────────────────────────────────────────
@@ -98,6 +219,9 @@ const SENSITIVE_PATHS = [
   "/root/.ssh",
   "/home/*/.ssh",
   "/proc/kcore", // physical memory (per-process files: see isSensitiveProcPath)
+  "/etc/wireguard",
+  "/etc/ppp/chap-secrets",
+  "/etc/ppp/pap-secrets",
 ].map((pathText) => pathText.split("/").filter(Boolean));
 
 // File or directory names that hold secrets wherever they are.
@@ -112,6 +236,12 @@ const SENSITIVE_NAMES = [
   /\.key$/i,
   /^\.env(\..+)?$/i, // .env, .env.local, .env.production
   /\.env$/i, // prod.env
+  /\.(keyring|p12|pfx|kdbx|jks)$/i, // Ceph keyrings, PKCS#12 bundles, password databases, Java keystores
+  /^\.(netrc|pgpass|my\.cnf|git-credentials)$/i,
+  /^\.\w*history$/i, // .bash_history, .zsh_history, .python_history: typed passwords end up here
+  /^\.(aws|kube|docker|gnupg|password-store)$/i, // credential directories
+  /^rclone\.conf$/i,
+  /credentials/i, // Samba, AWS and other credential files
 ];
 
 // Commands that print file contents. For these, raw devices are sensitive too:
@@ -172,9 +302,20 @@ function isSensitiveProcPath(segments) {
   });
 }
 
+// Dot-files and dot-directories directly in a home directory (/root/.x,
+// /home/<user>/.x) hold shell history, tokens and tool credentials too often
+// to list one by one.
+function isHomeDotPath(segments) {
+  return segments.some(
+    (segment, index) =>
+      (segment === "root" && segments[index + 1]?.startsWith(".")) ||
+      (segment === "home" && segments[index + 1] !== undefined && segments[index + 2]?.startsWith(".")),
+  );
+}
+
 function isSensitivePath(candidate) {
   const segments = pathSegments(candidate);
-  if (isSensitiveProcPath(segments)) return true;
+  if (isSensitiveProcPath(segments) || isHomeDotPath(segments)) return true;
   return segments.some(
     (segment, index) =>
       SENSITIVE_NAMES.some((pattern) => pattern.test(segment)) ||

@@ -72,7 +72,7 @@ ssh-keyscan your-proxmox-host | ssh-keygen -lf -
 
 and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). The server refuses to start without it while shell tools are enabled. `ALLOW_UNPINNED_SSH_HOST=yes` skips the check, which means any machine that answers as the host gets every shell command.
 
-If you only want API tools, set `SHELL_MODE=off`. If you want the assistant to look but never change anything, set `TOOL_MODE=readonly`: every call that would need approval is refused. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
+If you only want API tools, set `SHELL_MODE=off`. File reads (`cat`, `head`, `tail`, `grep`) run without approval only for files under `READONLY_PATHS` on the host, and always ask inside containers and VMs; add your own log directories to `READONLY_PATHS` if needed. If you want the assistant to look but never change anything, set `TOOL_MODE=readonly`: every call that would need approval is refused. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
 
 `vm_ssh` logs in to VMs with the same key, so add the public key to each VM you want it to reach (`ssh-copy-id -i ./mcp_key.pub root@<vm-ip>`). Two settings limit it:
 

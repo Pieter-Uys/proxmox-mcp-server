@@ -76,6 +76,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | --- | --- |
 | **Authentication** | Every `/mcp` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
 | **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls, GETs that read guest files or secrets (the QEMU guest agent, `cloudinit/dump`, backup `file-restore`, and `scan`, which makes the host probe targets; a list of known cases, not a guarantee), and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **File reads** | `cat`, `head`, `tail` and `grep` are read-only on the host only for files under `READONLY_PATHS` (logs, `/proc`, `/sys`, `/etc/pve` and a few host config files by default), and never for a known secret path. Inside containers and VMs (`lxc_shell`, `vm_ssh`) every file read needs `confirm: true`, because secrets there can be anywhere. `ls`, `stat`, `find` and `du`, which show names rather than contents, are unaffected. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
 | **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds (community scripts after 20 minutes), and a timeout says the command may still be running. |
@@ -109,6 +110,7 @@ These hold even with every setting above in place:
 
 - **`confirm: true` is set by the model.** The server can't tell whether the user really approved the action. A prompt-injected model can set it. Rely on your client's own tool-approval prompts for anything that matters, and review the audit log.
 - **Read-only means "does not change the host", not "safe to show the model".** Commands on the allowlist run as the SSH user, usually root, and print what they read. The sensitive-path check covers known secret locations; the SSH user's own file permissions are the real limit.
+- **`/etc/pve` is readable by default**, and guest configs there (`/etc/pve/qemu-server/*.conf`) can hold a cloud-init password hash, the same data `qm config` shows. Remove `/etc/pve` from `READONLY_PATHS` if that matters to you.
 - **The read-only allowlist is best effort.** It is a parser for a small set of commands, not a sandbox. Symlinks, hard links, copies of secrets in unexpected places, or an option it doesn't know about can still expose data or change state without confirmation. `qm config` and `pct config` output can include secrets a user stored there. Use `SHELL_MODE=readonly` or `off` where that matters.
 - **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS, `network_config apply` and community scripts run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
 - **Community scripts are only partly pinned.** `COMMUNITY_SCRIPTS_REF` pins the top-level script, but upstream scripts load their helpers from `community-scripts/core` on `main`.
@@ -133,6 +135,8 @@ Revisit these when adding support for a newer revision.
 - `AUTHENTIK_AUDIENCE` (unless `AUTH_MODE=off`): the provider's Client ID in Authentik.
 
 The error at startup names the missing setting and how to get it. To start without one anyway, set `ALLOW_UNPINNED_SSH_HOST=yes` or `ALLOW_ANY_AUDIENCE=yes`.
+
+Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` and `grep` run without approval only for files under `READONLY_PATHS`, and inside containers and VMs every file read asks. Add your own log directories to `READONLY_PATHS` if they come up often.
 
 ## Configuration
 
@@ -183,6 +187,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `TOOL_MODE` | See [Modes](#modes) |
 | `SHELL_MODE` | See [Modes](#modes) |
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
+| `READONLY_PATHS` | Comma-separated absolute paths whose files `cat`, `head`, `tail` and `grep` may read on the host without approval. Default: `/var/log,/sys,/proc,/etc/pve,/etc/network,/etc/hostname,/etc/hosts,/etc/os-release,/etc/apt/sources.list,/etc/apt/sources.list.d`. Setting it replaces the default. The deny list of secret paths still applies |
 | `AUDIT_REQUIRED` | `true` (default): a tool call is refused if its audit entry can't be written, so nothing runs unrecorded. `false` runs it anyway and logs the failure |
 | `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
