@@ -158,44 +158,60 @@ const READER_OPTIONS = {
 
 function fileOperands(name, args) {
   const spec = READER_OPTIONS[name];
-  const operands = [];
-  const files = [];
-  let patternGiven = false; // grep -e/-f: then every operand is a file
+  // patternGiven: grep -e/-f supplied the pattern, so every operand is a file.
+  const found = { operands: [], files: [], patternGiven: false };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--") {
-      operands.push(...args.slice(index + 1));
+      found.operands.push(...args.slice(index + 1));
       break;
     }
-    if (arg.startsWith("--")) {
-      const [option, attached] = splitLongOption(arg);
-      if (spec.longFlags.includes(option)) continue; // --color=auto keeps its attached value
-      const isFile = spec.fileLongValued.includes(option);
-      if (!isFile && !spec.longValued.includes(option)) return null;
-      const value = attached ?? args[++index];
-      if (option === "--regexp" || isFile) patternGiven = true;
-      if (isFile && value !== undefined) files.push(value);
-      continue;
-    }
-    if (arg.startsWith("-") && arg.length > 1) {
-      if (/^-\d+$/.test(arg)) continue; // head -20, tail -100
-      for (let position = 1; position < arg.length; position++) {
-        const letter = arg[position];
-        const isFile = spec.fileValued.includes(letter);
-        if (!isFile && !spec.valued.includes(letter)) continue;
-        const attached = arg.slice(position + 1);
-        const value = attached || args[++index];
-        if (letter === "e" || isFile) patternGiven = true;
-        if (isFile && value !== undefined) files.push(value);
-        break;
-      }
-      continue;
-    }
-    if (arg !== "-") operands.push(arg);
+    const consumed = readReaderOption(spec, arg, args[index + 1], found);
+    if (consumed === null) return null;
+    index += consumed;
   }
   // grep's first operand is the pattern unless -e or -f gave one.
-  if (name === "grep" && !patternGiven) operands.shift();
-  return [...files, ...operands];
+  if (name === "grep" && !found.patternGiven) found.operands.shift();
+  return [...found.files, ...found.operands];
+}
+
+// Reads one word into `found`. Returns how many following words it consumed
+// as a value, or null for an unknown long option.
+function readReaderOption(spec, arg, next, found) {
+  if (arg.startsWith("--")) return readReaderLongOption(spec, arg, next, found);
+  if (arg.startsWith("-") && arg.length > 1) return readReaderShortCluster(spec, arg, next, found);
+  if (arg !== "-") found.operands.push(arg);
+  return 0;
+}
+
+function readReaderLongOption(spec, arg, next, found) {
+  const [option, attached] = splitLongOption(arg);
+  if (spec.longFlags.includes(option)) return 0; // --color=auto keeps its attached value
+  const isFile = spec.fileLongValued.includes(option);
+  if (!isFile && !spec.longValued.includes(option)) return null;
+  const value = attached ?? next;
+  noteValue(found, value, { isFile, isPattern: option === "--regexp" });
+  return attached === undefined ? 1 : 0;
+}
+
+// The first valued letter in a cluster takes the rest of the word as its value
+// (-n50), or the next word if nothing follows it (-n 50).
+function readReaderShortCluster(spec, arg, next, found) {
+  if (/^-\d+$/.test(arg)) return 0; // head -20, tail -100
+  for (let position = 1; position < arg.length; position++) {
+    const letter = arg[position];
+    const isFile = spec.fileValued.includes(letter);
+    if (!isFile && !spec.valued.includes(letter)) continue;
+    const attached = arg.slice(position + 1);
+    noteValue(found, attached || next, { isFile, isPattern: letter === "e" });
+    return attached ? 0 : 1;
+  }
+  return 0;
+}
+
+function noteValue(found, value, { isFile, isPattern }) {
+  if (isFile || isPattern) found.patternGiven = true;
+  if (isFile && value !== undefined) found.files.push(value);
 }
 
 // ─── Sensitive paths ────────────────────────────────────────────────────────
@@ -638,44 +654,44 @@ const isPsSort = (value) =>
 const PS_PID_LIST = /^\d+(,\d+)*$/;
 const PS_COMMAND_LIST = /^[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*(,[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*)*$/;
 
+// What one ps word asks for: the parts of the command it claims (selection,
+// format, sort) and how many following words it consumes, or null if it isn't
+// an accepted shape.
+function readPsWord(arg, next) {
+  if (arg === "--no-headers") return { parts: [], consumes: 0 };
+  if (arg === "-p") return PS_PID_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  if (arg === "-C") return PS_COMMAND_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  const [name, attached] = splitLongOption(arg);
+  if (name === "--sort") return readPsSort(attached, next);
+  return readPsCluster(arg, next);
+}
+
+function readPsSort(attached, next) {
+  const keys = attached ?? next;
+  return isPsSort(keys) ? { parts: ["sort"], consumes: attached === undefined ? 1 : 0 } : null;
+}
+
+// -e, -A, -f, -ef, -ely and so on, or -o / -eo followed by a format list.
+function readPsCluster(arg, next) {
+  if (arg === "-") return null;
+  const cluster = PS_CLUSTER.exec(arg) ?? PS_CLUSTER_WITH_FORMAT_LIST.exec(arg);
+  if (!cluster) return null;
+  const { select, format } = cluster.groups;
+  const parts = [select && "selection", format && "format"].filter(Boolean);
+  if (!arg.endsWith("o")) return { parts, consumes: 0 };
+  return isPsFormat(next) ? { parts: [...parts, "format"], consumes: 1 } : null;
+}
+
+// Each part may be claimed once: a second selection or format could conflict,
+// and a conflict is a parse failure, which is what triggers the BSD retry.
 function isReadonlyPs(args) {
   if (args.length === 1 && PS_BSD_COMMANDS.has(args[0])) return true;
-  const seen = { selection: false, format: false, sort: false };
-  // Each part of the command may appear once; a second selection or format
-  // could conflict, and a conflict is a parse failure.
-  const claim = (part) => {
-    if (seen[part]) return false;
-    seen[part] = true;
-    return true;
-  };
+  const claimed = new Set();
   for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    const next = args[index + 1];
-    const cluster = PS_CLUSTER.exec(arg) ?? PS_CLUSTER_WITH_FORMAT_LIST.exec(arg);
-    if (cluster && arg !== "-") {
-      if (cluster.groups.select && !claim("selection")) return false;
-      if (cluster.groups.format && !claim("format")) return false;
-      if (cluster[0].endsWith("o")) {
-        if (!claim("format") || !isPsFormat(next)) return false;
-        index++;
-      }
-      continue;
-    }
-    if (arg === "-p" || arg === "-C") {
-      const valid = arg === "-p" ? PS_PID_LIST.test(next ?? "") : PS_COMMAND_LIST.test(next ?? "");
-      if (!valid || !claim("selection")) return false;
-      index++;
-      continue;
-    }
-    const [name, attached] = splitLongOption(arg);
-    if (name === "--sort") {
-      const keys = attached ?? next;
-      if (!isPsSort(keys) || !claim("sort")) return false;
-      if (attached === undefined) index++;
-      continue;
-    }
-    if (arg === "--no-headers") continue;
-    return false;
+    const word = readPsWord(args[index], args[index + 1]);
+    if (!word || word.parts.some((part) => claimed.has(part))) return false;
+    for (const part of word.parts) claimed.add(part);
+    index += word.consumes;
   }
   return true;
 }
