@@ -497,6 +497,18 @@ const isPsSort = (value) =>
 const PS_PID_LIST = /^\d+(,\d+)*$/;
 const PS_COMMAND_LIST = /^[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*(,[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*)*$/;
 
+// ps also takes its parsing personality from the environment (procps
+// global.c: PS_PERSONALITY, then CMD_ENV, and I_WANT_A_BROKEN_PS), and "bsd"
+// forces BSD parsing of every word, where -e prints environments. The grammar
+// above can't see the remote environment, and inside a guest its owner
+// controls it (/etc/environment is applied to SSH sessions), so every ps
+// command runs with those variables unset.
+const PS_SAFE_ENVIRONMENT = "env -u PS_PERSONALITY -u CMD_ENV -u I_WANT_A_BROKEN_PS";
+export function withSafePsEnvironment(command) {
+  const trimmed = command.trimStart();
+  return trimmed === "ps" || trimmed.startsWith("ps ") ? `${PS_SAFE_ENVIRONMENT} ${trimmed}` : command;
+}
+
 // What one ps word asks for: the parts of the command it claims (selection,
 // format, sort) and how many following words it consumes, or null if it isn't
 // an accepted shape.
