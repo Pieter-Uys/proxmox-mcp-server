@@ -638,44 +638,44 @@ const isPsSort = (value) =>
 const PS_PID_LIST = /^\d+(,\d+)*$/;
 const PS_COMMAND_LIST = /^[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*(,[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*)*$/;
 
+// What one ps word asks for: the parts of the command it claims (selection,
+// format, sort) and how many following words it consumes, or null if it isn't
+// an accepted shape.
+function readPsWord(arg, next) {
+  if (arg === "--no-headers") return { parts: [], consumes: 0 };
+  if (arg === "-p") return PS_PID_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  if (arg === "-C") return PS_COMMAND_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  const [name, attached] = splitLongOption(arg);
+  if (name === "--sort") return readPsSort(attached, next);
+  return readPsCluster(arg, next);
+}
+
+function readPsSort(attached, next) {
+  const keys = attached ?? next;
+  return isPsSort(keys) ? { parts: ["sort"], consumes: attached === undefined ? 1 : 0 } : null;
+}
+
+// -e, -A, -f, -ef, -ely and so on, or -o / -eo followed by a format list.
+function readPsCluster(arg, next) {
+  if (arg === "-") return null;
+  const cluster = PS_CLUSTER.exec(arg) ?? PS_CLUSTER_WITH_FORMAT_LIST.exec(arg);
+  if (!cluster) return null;
+  const { select, format } = cluster.groups;
+  const parts = [select && "selection", format && "format"].filter(Boolean);
+  if (!arg.endsWith("o")) return { parts, consumes: 0 };
+  return isPsFormat(next) ? { parts: [...parts, "format"], consumes: 1 } : null;
+}
+
+// Each part may be claimed once: a second selection or format could conflict,
+// and a conflict is a parse failure, which is what triggers the BSD retry.
 function isReadonlyPs(args) {
   if (args.length === 1 && PS_BSD_COMMANDS.has(args[0])) return true;
-  const seen = { selection: false, format: false, sort: false };
-  // Each part of the command may appear once; a second selection or format
-  // could conflict, and a conflict is a parse failure.
-  const claim = (part) => {
-    if (seen[part]) return false;
-    seen[part] = true;
-    return true;
-  };
+  const claimed = new Set();
   for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    const next = args[index + 1];
-    const cluster = PS_CLUSTER.exec(arg) ?? PS_CLUSTER_WITH_FORMAT_LIST.exec(arg);
-    if (cluster && arg !== "-") {
-      if (cluster.groups.select && !claim("selection")) return false;
-      if (cluster.groups.format && !claim("format")) return false;
-      if (cluster[0].endsWith("o")) {
-        if (!claim("format") || !isPsFormat(next)) return false;
-        index++;
-      }
-      continue;
-    }
-    if (arg === "-p" || arg === "-C") {
-      const valid = arg === "-p" ? PS_PID_LIST.test(next ?? "") : PS_COMMAND_LIST.test(next ?? "");
-      if (!valid || !claim("selection")) return false;
-      index++;
-      continue;
-    }
-    const [name, attached] = splitLongOption(arg);
-    if (name === "--sort") {
-      const keys = attached ?? next;
-      if (!isPsSort(keys) || !claim("sort")) return false;
-      if (attached === undefined) index++;
-      continue;
-    }
-    if (arg === "--no-headers") continue;
-    return false;
+    const word = readPsWord(args[index], args[index + 1]);
+    if (!word || word.parts.some((part) => claimed.has(part))) return false;
+    for (const part of word.parts) claimed.add(part);
+    index += word.consumes;
   }
   return true;
 }
