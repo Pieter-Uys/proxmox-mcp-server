@@ -1,6 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 
 // src/config.js reads the environment once at import and exits on bad
@@ -126,5 +127,19 @@ test("ports must be whole numbers from 1 to 65535", () => {
       const result = loadSetting({ [name]: value }, "1");
       assert.equal(result.status, 1, `${name}=${value}`);
     }
+  }
+});
+
+test("the host key recovery command scans the configured SSH port", () => {
+  const result = loadConfig({ ...NO_WAIVERS, AUTHENTIK_AUDIENCE: "client-id", PROXMOX_SSH_PORT: "2222" });
+  assert.equal(result.status, 1);
+  assert.match(result.error, /ssh-keyscan -p 2222 pve\.test \| ssh-keygen -lf -/);
+});
+
+test(".env.example leaves the pins blank, so its exemptions and waivers work as copied", () => {
+  const example = fs.readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+  for (const name of ["PROXMOX_SSH_HOST_KEY", "AUTHENTIK_AUDIENCE"]) {
+    const line = example.split("\n").find((text) => text.startsWith(`${name}=`));
+    assert.equal(line, `${name}=`, `${name} should be blank, not a placeholder`);
   }
 });

@@ -73,7 +73,7 @@ app.listen(CONFIG.server.port, CONFIG.server.bindAddress, () => {
   // Reached only with the ALLOW_* waivers (config.js refuses to start otherwise).
   if (!CONFIG.ssh.hostKey && SECURITY.shellMode !== "off")
     console.warn(
-      "WARNING: ALLOW_UNPINNED_SSH_HOST=yes, so the Proxmox host's SSH key is not checked. Set PROXMOX_SSH_HOST_KEY from: ssh-keyscan <host> | ssh-keygen -lf -",
+      `WARNING: ALLOW_UNPINNED_SSH_HOST=yes, so the Proxmox host's SSH key is not checked. Set PROXMOX_SSH_HOST_KEY from: ssh-keyscan -p ${CONFIG.ssh.port} ${CONFIG.ssh.host} | ssh-keygen -lf -`,
     );
   if (!CONFIG.authentik.audience && SECURITY.authMode !== "off")
     console.warn(

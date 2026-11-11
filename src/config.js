@@ -312,7 +312,7 @@ requirePinOrWaiver({
   waiver: "ALLOW_UNPINNED_SSH_HOST",
   message:
     "PROXMOX_SSH_HOST_KEY is not set, so the Proxmox host's SSH key would not be checked. " +
-    `Get the fingerprint with: ssh-keyscan ${CONFIG.ssh.host} | ssh-keygen -lf -  ` +
+    `Get the fingerprint with: ssh-keyscan -p ${CONFIG.ssh.port} ${CONFIG.ssh.host} | ssh-keygen -lf -  ` +
     "and set PROXMOX_SSH_HOST_KEY to the SHA256:... value (ed25519 if present).",
 });
 
