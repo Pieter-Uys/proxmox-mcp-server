@@ -496,3 +496,182 @@ test("everyday read options keep working under the exact allowlists", () => {
     assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
   }
 });
+
+// ─── Second audit: optional option values (R1) ──────────────────────────────
+// journalctl's -n/--lines takes the next word only if it parses as [+]N or
+// "all" (systemd journalctl.c: OPTION_OPTIONAL_ARG, parse_lines graceful);
+// anything else is parsed as an option of its own.
+test("journalctl -n/--lines never hides the option after it", () => {
+  for (const command of lines(`
+    journalctl -n --vacuum-time=1s
+    journalctl --lines --vacuum-size=1M
+    journalctl -n --rotate
+    journalctl -n --flush
+    journalctl -n --file=/path/to/other.journal
+    journalctl -n -D /var/log/journal
+    journalctl -rn --rotate
+  `)) {
+    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+  }
+  for (const command of lines(`
+    journalctl -n 50
+    journalctl -n50
+    journalctl -n +10
+    journalctl -n all
+    journalctl --lines=50 -u pveproxy
+    journalctl --lines 20
+    journalctl -n
+    journalctl -n -u pveproxy
+    journalctl -rn 20
+    journalctl --since -1h
+    journalctl -S -2d -p err
+  `)) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
+});
+
+test("a valued option never swallows a following word that starts with -", () => {
+  for (const command of lines(`
+    journalctl -u --rotate
+    journalctl --unit --vacuum-time=1s
+    journalctl -g --flush
+    ss -A --kill
+    systemctl status pveproxy -n --host=other
+    systemctl list-units -t --machine=foo
+    tail -n --follow /var/log/syslog
+    tail -c -f /var/log/syslog
+    zfs list -o --bogus
+    zpool list -o --bogus
+    pvesm status --storage --delete
+    qm config 100 --snapshot --delete
+  `)) {
+    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+  }
+});
+
+// ─── Second audit: ps (R2) ──────────────────────────────────────────────────
+// procps retries a command line it can't parse in BSD mode (parser.c,
+// try_bsd), where a word containing e shows every process's environment. So
+// ps accepts only shapes whose values can't fail to parse.
+test("ps: only known shapes pass, so the BSD retry can never print environments", () => {
+  for (const command of lines(`
+    ps -auxe
+    ps -auxeww
+    ps -eauxe
+    ps -o environ
+    ps -eo pid,environ
+    ps -u alice
+    ps -ef -u nosuchuser
+    ps -ef -o pid
+    ps -e -f -l
+    ps -p abc
+    ps -p 1 -o pid,bogus
+    ps --sort=environ
+    ps aux e
+    ps axe
+    ps -C -e
+  `)) {
+    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+  }
+  for (const command of lines(`
+    ps
+    ps aux
+    ps auxww
+    ps axjf
+    ps -e
+    ps -A
+    ps -ef
+    ps -eF
+    ps -ely
+    ps -p 1 -o pid,cmd
+    ps -p 1,2,3
+    ps -C pveproxy -o pid,%cpu,%mem,args
+    ps -eo pid,user,comm --sort=-%cpu
+    ps -e -o pid,rss --sort -rss --no-headers
+  `)) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
+});
+
+// ─── Second audit: /proc per-process files (R3) ─────────────────────────────
+test("per-process /proc files are sensitive except a short readable list", () => {
+  for (const command of lines(`
+    cat /proc/1/task/1/environ
+    cat /proc/self/task/12/environ
+    ls /proc/1/task/1/root
+    cat /proc/1/task/1/cwd
+    ls /proc/1/fd
+    cat /proc/1/fd/3
+    ls /proc/1/task/1/fd
+    ls /proc/1/map_files
+    head -c 100 /proc/1/mem
+    cat /proc/self/environ
+    cat /proc/thread-self/environ
+    cat /proc/1/maps
+  `)) {
+    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+  }
+  for (const command of lines(`
+    cat /proc/1/status
+    cat /proc/self/stat
+    cat /proc/1/cmdline
+    cat /proc/1/limits
+    cat /proc/1/task/1/status
+    cat /proc/meminfo
+    cat /proc/loadavg
+    cat /proc/cpuinfo
+    ls /proc/1
+  `)) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
+});
+
+// ─── Known bypass regressions (both audits) ─────────────────────────────────
+// Every command string either audit reported as passing the allowlist when it
+// shouldn't. A later refactor that reopens one fails here, by name.
+const KNOWN_BYPASSES = `
+  A1-H1  ss -D /etc/network/interfaces
+  A1-H1  ss --diag=/etc/hosts
+  A1-H1  ss --kil
+  A1-H1  journalctl --rot
+  A1-H1  journalctl --flu
+  A1-H1  journalctl --vacuum-t=1s
+  A1-H1  journalctl --setup
+  A1-H1  sensors --se
+  A1-H1  smartctl -l scterc,1,1 /dev/sda
+  A1-H1  smartctl -l scterc,70,70 /dev/sda
+  A1-H1  smartctl --log=scterc,70,70 /dev/sda
+  A1-H1  systemctl status --host=root@other
+  A1-H2  cat /etc/pve/priv/authkey.key
+  A1-H2  cat /etc/shadow
+  A1-H2  cat /root/.ssh/id_ed25519
+  A1-H2  grep -r . /etc/pve/priv
+  A1-H4  cat /dev/zero
+  A1-H4  tail -f /var/log/syslog
+  A1-H4  journalctl -f
+  A1-CR  grep --rec root /etc
+  A1-CR  grep -d rec root /etc
+  A1-CR  ps eww
+  A1-CR  ps auxe
+  A2-R1  journalctl -n --vacuum-time=1s
+  A2-R1  journalctl --lines --vacuum-size=1M
+  A2-R1  journalctl -n --rotate
+  A2-R1  journalctl -n --flush
+  A2-R1  journalctl -n --file=/path/to/other.journal
+  A2-R2  ps -auxe
+  A2-R2  ps -auxeww
+  A2-R2  ps -eauxe
+  A2-R2  ps -o environ
+  A2-R3  cat /proc/1/task/1/environ
+  A2-R3  ls /proc/1/fd
+  A2-R3  ls /proc/1/map_files
+  A2-R3  cat /proc/1/mem
+`;
+
+test("every bypass reported by either audit stays refused", () => {
+  for (const line of lines(KNOWN_BYPASSES)) {
+    const [finding, ...words] = line.split(/\s+/);
+    const command = words.join(" ");
+    assert.equal(isReadonlyCommand(command), false, `${finding} reopened: ${command}`);
+  }
+});

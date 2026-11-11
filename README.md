@@ -197,7 +197,9 @@ The suite covers:
 - `zfs_create` building only `zfs create`, with every word quoted
 - argument validation against the real tool schemas, including shell and path injection attempts
 - audit log redaction of secret-looking fields
-- sensitive-path reads (including `..` traversal and `/proc/*/root` paths), recursive `grep` in its abbreviated forms (`--rec`, `-d rec`), `ps e` and the `smartctl` set forms behind `-l` and `-d`
+- sensitive-path reads (including `..` traversal, other roots under `/proc/*/root`, and every `/proc/<pid>` file except a short list such as `status` and `cmdline`), recursive `grep` in its abbreviated forms (`--rec`, `-d rec`), and `ps` limited to shapes that can't fall back to BSD mode (`ps -auxe`)
+- option values: a value taken from the next word never starts with `-` unless that option allows it (`journalctl -n --rotate` is refused)
+- a regression list of every bypass either audit reported and the `smartctl` set forms behind `-l` and `-d`
 - `vm_ssh` IP validation, the private-range default, `VM_SSH_ALLOWED_CIDRS`, `hostKey` and the password gate
 - SSH host key pinning, the output cap and that a failing output handler can't crash the process
 - JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS`, `ALLOWED_GROUPS`, unusable JWKS keys, non-JWT tokens refused without a network call, and the token cache
