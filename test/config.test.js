@@ -43,3 +43,40 @@ test("MCP_BIND_ADDRESS must be an IP address", () => {
   assert.equal(result.status, 1);
   assert.match(result.error, /must be an IP address/);
 });
+
+// ─── Second audit R6: pins are required unless explicitly waived ────────────
+const FINGERPRINT = "SHA256:" + "A".repeat(43);
+const NO_WAIVERS = { ALLOW_UNPINNED_SSH_HOST: "", ALLOW_ANY_AUDIENCE: "", PROXMOX_SSH_HOST_KEY: "", AUTHENTIK_AUDIENCE: "" };
+
+test("without PROXMOX_SSH_HOST_KEY the server refuses to start, and says how to get it", () => {
+  const result = loadConfig({ ...NO_WAIVERS, AUTHENTIK_AUDIENCE: "client-id" });
+  assert.equal(result.status, 1);
+  assert.match(result.error, /PROXMOX_SSH_HOST_KEY/);
+  assert.match(result.error, /ssh-keyscan .* \| ssh-keygen -lf -/);
+  assert.match(result.error, /ALLOW_UNPINNED_SSH_HOST=yes/);
+});
+
+test("the host key is not required when shell tools are off", () => {
+  assert.equal(loadConfig({ ...NO_WAIVERS, AUTHENTIK_AUDIENCE: "client-id", SHELL_MODE: "off" }).status, 0);
+});
+
+test("without AUTHENTIK_AUDIENCE the server refuses to start, and says where the client ID is", () => {
+  const result = loadConfig({ ...NO_WAIVERS, PROXMOX_SSH_HOST_KEY: FINGERPRINT });
+  assert.equal(result.status, 1);
+  assert.match(result.error, /AUTHENTIK_AUDIENCE/);
+  assert.match(result.error, /Client ID/);
+  assert.match(result.error, /ALLOW_ANY_AUDIENCE=yes/);
+});
+
+test("the audience is not required when auth is off (local testing)", () => {
+  const env = { ...NO_WAIVERS, PROXMOX_SSH_HOST_KEY: FINGERPRINT, AUTH_MODE: "off", ALLOW_INSECURE_AUTH: "yes" };
+  assert.equal(loadConfig(env).status, 0);
+});
+
+test("the server starts with both values set, or with both waived", () => {
+  assert.equal(loadConfig({ ...NO_WAIVERS, PROXMOX_SSH_HOST_KEY: FINGERPRINT, AUTHENTIK_AUDIENCE: "client-id" }).status, 0);
+  assert.equal(loadConfig({ ...NO_WAIVERS, ALLOW_UNPINNED_SSH_HOST: "yes", ALLOW_ANY_AUDIENCE: "yes" }).status, 0);
+  for (const waiver of ["true", "1", "YES "]) {
+    assert.equal(loadConfig({ ...NO_WAIVERS, ALLOW_UNPINNED_SSH_HOST: waiver, ALLOW_ANY_AUDIENCE: "yes" }).status, 1, `only "yes" waives: ${waiver}`);
+  }
+});

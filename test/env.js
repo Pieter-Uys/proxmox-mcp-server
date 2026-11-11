@@ -13,6 +13,11 @@ Object.assign(process.env, {
   MCP_BASE_URL: "https://mcp.test",
   AUTHENTIK_URL: "https://auth.test",
   AUDIT_LOG: path.join(os.tmpdir(), "proxmox-mcp-test", "audit.jsonl"),
+  // The server refuses to start without a pinned SSH host key and an
+  // audience. Tests have neither, so they use the explicit waivers;
+  // test/config.test.js checks the refusals themselves.
+  ALLOW_UNPINNED_SSH_HOST: "yes",
+  ALLOW_ANY_AUDIENCE: "yes",
 });
 
 // Start every file from the default (secure) modes.
@@ -20,3 +25,5 @@ delete process.env.AUTH_MODE;
 delete process.env.SHELL_MODE;
 delete process.env.PROXMOX_CA_CERT;
 delete process.env.PROXMOX_SSH_KEY;
+delete process.env.PROXMOX_SSH_HOST_KEY;
+delete process.env.AUTHENTIK_AUDIENCE;
