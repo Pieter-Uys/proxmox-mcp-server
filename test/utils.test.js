@@ -30,3 +30,13 @@ test("pick keeps control characters from the lookup key out of its error", () =>
   );
   assert.equal(pick({ a: 1 }, "a", "tool"), 1);
 });
+
+test("stripTrailingSlashes removes only trailing slashes, in linear time", async () => {
+  const { stripTrailingSlashes } = await import("../src/utils.js");
+  assert.equal(stripTrailingSlashes("/var/log///"), "/var/log");
+  assert.equal(stripTrailingSlashes("/a//b"), "/a//b");
+  assert.equal(stripTrailingSlashes("///"), "");
+  const started = process.hrtime.bigint();
+  stripTrailingSlashes(`${"/".repeat(50_000)}x`);
+  assert.ok(process.hrtime.bigint() - started < 100_000_000n);
+});

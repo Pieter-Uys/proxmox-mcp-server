@@ -158,44 +158,60 @@ const READER_OPTIONS = {
 
 function fileOperands(name, args) {
   const spec = READER_OPTIONS[name];
-  const operands = [];
-  const files = [];
-  let patternGiven = false; // grep -e/-f: then every operand is a file
+  // patternGiven: grep -e/-f supplied the pattern, so every operand is a file.
+  const found = { operands: [], files: [], patternGiven: false };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--") {
-      operands.push(...args.slice(index + 1));
+      found.operands.push(...args.slice(index + 1));
       break;
     }
-    if (arg.startsWith("--")) {
-      const [option, attached] = splitLongOption(arg);
-      if (spec.longFlags.includes(option)) continue; // --color=auto keeps its attached value
-      const isFile = spec.fileLongValued.includes(option);
-      if (!isFile && !spec.longValued.includes(option)) return null;
-      const value = attached ?? args[++index];
-      if (option === "--regexp" || isFile) patternGiven = true;
-      if (isFile && value !== undefined) files.push(value);
-      continue;
-    }
-    if (arg.startsWith("-") && arg.length > 1) {
-      if (/^-\d+$/.test(arg)) continue; // head -20, tail -100
-      for (let position = 1; position < arg.length; position++) {
-        const letter = arg[position];
-        const isFile = spec.fileValued.includes(letter);
-        if (!isFile && !spec.valued.includes(letter)) continue;
-        const attached = arg.slice(position + 1);
-        const value = attached || args[++index];
-        if (letter === "e" || isFile) patternGiven = true;
-        if (isFile && value !== undefined) files.push(value);
-        break;
-      }
-      continue;
-    }
-    if (arg !== "-") operands.push(arg);
+    const consumed = readReaderOption(spec, arg, args[index + 1], found);
+    if (consumed === null) return null;
+    index += consumed;
   }
   // grep's first operand is the pattern unless -e or -f gave one.
-  if (name === "grep" && !patternGiven) operands.shift();
-  return [...files, ...operands];
+  if (name === "grep" && !found.patternGiven) found.operands.shift();
+  return [...found.files, ...found.operands];
+}
+
+// Reads one word into `found`. Returns how many following words it consumed
+// as a value, or null for an unknown long option.
+function readReaderOption(spec, arg, next, found) {
+  if (arg.startsWith("--")) return readReaderLongOption(spec, arg, next, found);
+  if (arg.startsWith("-") && arg.length > 1) return readReaderShortCluster(spec, arg, next, found);
+  if (arg !== "-") found.operands.push(arg);
+  return 0;
+}
+
+function readReaderLongOption(spec, arg, next, found) {
+  const [option, attached] = splitLongOption(arg);
+  if (spec.longFlags.includes(option)) return 0; // --color=auto keeps its attached value
+  const isFile = spec.fileLongValued.includes(option);
+  if (!isFile && !spec.longValued.includes(option)) return null;
+  const value = attached ?? next;
+  noteValue(found, value, { isFile, isPattern: option === "--regexp" });
+  return attached === undefined ? 1 : 0;
+}
+
+// The first valued letter in a cluster takes the rest of the word as its value
+// (-n50), or the next word if nothing follows it (-n 50).
+function readReaderShortCluster(spec, arg, next, found) {
+  if (/^-\d+$/.test(arg)) return 0; // head -20, tail -100
+  for (let position = 1; position < arg.length; position++) {
+    const letter = arg[position];
+    const isFile = spec.fileValued.includes(letter);
+    if (!isFile && !spec.valued.includes(letter)) continue;
+    const attached = arg.slice(position + 1);
+    noteValue(found, attached || next, { isFile, isPattern: letter === "e" });
+    return attached ? 0 : 1;
+  }
+  return 0;
+}
+
+function noteValue(found, value, { isFile, isPattern }) {
+  if (isFile || isPattern) found.patternGiven = true;
+  if (isFile && value !== undefined) found.files.push(value);
 }
 
 // ─── Sensitive paths ────────────────────────────────────────────────────────
