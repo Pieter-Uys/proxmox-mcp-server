@@ -3,7 +3,7 @@ import { COMMUNITY_SCRIPT_TIMEOUT_MS, HOST_KEY_FINGERPRINT } from "./constants.j
 import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
-import { shellConfirmationReason } from "./policy.js";
+import { shellConfirmationReason, withSafePsEnvironment } from "./policy.js";
 import { pick } from "./utils.js";
 
 // ─── Tools ──────────────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ export const TOOLS = {
     },
     shellCommand: (args) => args.command,
     confirmationReason: shellConfirmationReason,
-    run: (args) => runOnHost(args.command),
+    run: (args) => runOnHost(withSafePsEnvironment(args.command)),
   },
 
   lxc_shell: {
@@ -199,7 +199,7 @@ export const TOOLS = {
     confirmationReason: shellConfirmationReason,
     run: (args) =>
       runOnHost(
-        `pct exec ${args.vmid} -- bash -c ${shellQuote(args.command)}`,
+        `pct exec ${args.vmid} -- bash -c ${shellQuote(withSafePsEnvironment(args.command))}`,
       ),
   },
 
@@ -243,7 +243,7 @@ export const TOOLS = {
       // Checked again here so a direct callTool can't skip the limits.
       const refusal = vmSshRefusalReason(args);
       if (refusal) throw new Error(refusal);
-      const result = await sshExec(args.command, {
+      const result = await sshExec(withSafePsEnvironment(args.command), {
         host: args.ip,
         username: args.username || "root",
         password: args.password,
