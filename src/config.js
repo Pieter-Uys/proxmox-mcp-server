@@ -121,18 +121,18 @@ function parseServiceUrl(name) {
     console.error(`${name} must be an https:// URL (http:// only for localhost) with no query or fragment, got "${raw}".`);
     process.exit(1);
   }
-  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  return `${url.origin}${stripTrailingSlashes(url.pathname)}`;
 }
 
 // Reads ALLOWED_USERS. Each entry is typed (user:, email:, sub:) and matches
 // only that claim; an untyped entry matches the username only. Matching an
 // entry against any claim let someone who set their email to a listed
 // username get in. An unknown type is a typo, so it refuses to start.
-const USER_ENTRY_TYPES = ["user", "email", "sub"];
+const USER_ENTRY_TYPES = new Set(["user", "email", "sub"]);
 function parseAllowedUsers(name) {
   const entries = parseOptionalList(name);
   if (!entries) return null;
-  const unknown = entries.find((entry) => entry.includes(":") && !USER_ENTRY_TYPES.includes(entry.split(":")[0]));
+  const unknown = entries.find((entry) => entry.includes(":") && !USER_ENTRY_TYPES.has(entry.split(":")[0]));
   if (unknown) {
     console.error(`${name} entry "${unknown}" has an unknown type. Use user:, email: or sub:, or no prefix for a username.`);
     process.exit(1);
