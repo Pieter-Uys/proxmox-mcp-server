@@ -129,7 +129,7 @@ Revisit these when adding support for a newer revision.
 
 **From a version before the second security audit (November 2026):** the server now refuses to start until these are set, because each was optional before and an upgraded deployment had neither control in force:
 
-- `PROXMOX_SSH_HOST_KEY` (unless `SHELL_MODE=off`): run `ssh-keyscan <host> | ssh-keygen -lf -` and use the `SHA256:...` value.
+- `PROXMOX_SSH_HOST_KEY` (unless `SHELL_MODE=off`): run `ssh-keyscan -p <port> <host> | ssh-keygen -lf -` and use the `SHA256:...` value.
 - `AUTHENTIK_AUDIENCE` (unless `AUTH_MODE=off`): the provider's Client ID in Authentik.
 
 The error at startup names the missing setting and how to get it. To start without one anyway, set `ALLOW_UNPINNED_SSH_HOST=yes` or `ALLOW_ANY_AUDIENCE=yes`.
@@ -159,7 +159,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `PROXMOX_SSH_PORT` | Usually `22` |
 | `PROXMOX_SSH_USER` | Usually `root` |
 | `PROXMOX_SSH_KEY` | Path to the private key. `vm_ssh` uses it too |
-| `PROXMOX_SSH_HOST_KEY` | SHA256 fingerprint of the host's SSH key, from `ssh-keyscan <host> \| ssh-keygen -lf -`. **Required** unless `SHELL_MODE=off`. A host presenting another key is refused before authenticating. Waive with `ALLOW_UNPINNED_SSH_HOST=yes` (not recommended) |
+| `PROXMOX_SSH_HOST_KEY` | SHA256 fingerprint of the host's SSH key, from `ssh-keyscan -p <port> <host> \| ssh-keygen -lf -`. **Required** unless `SHELL_MODE=off`. A host presenting another key is refused before authenticating. Waive with `ALLOW_UNPINNED_SSH_HOST=yes` (not recommended) |
 | `VM_SSH_ALLOWED_CIDRS` | Comma-separated ranges `vm_ssh` may connect to, e.g. `192.168.10.0/24`. Default: private ranges only (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). Narrow it to your VM subnets |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default): `vm_ssh` refuses a `password` argument and uses `PROXMOX_SSH_KEY`, so passwords never pass through the model's context. `on` allows passwords, and only together with a `hostKey` fingerprint |
 
