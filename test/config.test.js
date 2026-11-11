@@ -80,3 +80,51 @@ test("the server starts with both values set, or with both waived", () => {
     assert.equal(loadConfig({ ...NO_WAIVERS, ALLOW_UNPINNED_SSH_HOST: waiver, ALLOW_ANY_AUDIENCE: "yes" }).status, 1, `only "yes" waives: ${waiver}`);
   }
 });
+
+// ─── Second audit R9, R10: allowlist entries, URLs and ports ────────────────
+function loadSetting(env, expression) {
+  const script = `const { CONFIG, SECURITY } = await import(${JSON.stringify(CONFIG_URL)}); console.log(JSON.stringify(${expression}));`;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, AUTH_MODE: "", ALLOW_INSECURE_AUTH: "", MCP_BIND_ADDRESS: "", ...env },
+    encoding: "utf8",
+  });
+  return { status: child.status, value: child.status === 0 ? JSON.parse(child.stdout) : undefined, error: child.stderr };
+}
+
+test("ALLOWED_USERS: an unknown entry type refuses to start; untyped entries get a note", () => {
+  const typo = loadSetting({ ALLOWED_USERS: "mail:alice@example.com" }, "SECURITY.allowedUsers");
+  assert.equal(typo.status, 1);
+  assert.match(typo.error, /mail:/);
+  const untyped = loadSetting({ ALLOWED_USERS: "alice, email:bob@example.com" }, "SECURITY.allowedUsers");
+  assert.equal(untyped.status, 0);
+  assert.deepEqual(untyped.value, ["alice", "email:bob@example.com"]);
+  assert.match(untyped.error, /untyped.*username only/i);
+});
+
+test("AUTHENTIK_URL and MCP_BASE_URL must be https (http only for loopback), trailing slash stripped", () => {
+  const ok = loadSetting({ AUTHENTIK_URL: "https://auth.example.com/", MCP_BASE_URL: "https://mcp.example.com//" }, "[CONFIG.authentik.url, CONFIG.server.baseUrl]");
+  assert.deepEqual(ok.value, ["https://auth.example.com", "https://mcp.example.com"]);
+  assert.equal(loadSetting({ AUTHENTIK_URL: "http://127.0.0.1:9000" }, "CONFIG.authentik.url").value, "http://127.0.0.1:9000");
+  assert.equal(loadSetting({ MCP_BASE_URL: "http://localhost:3000" }, "CONFIG.server.baseUrl").value, "http://localhost:3000");
+  for (const [name, value] of [
+    ["AUTHENTIK_URL", "http://auth.example.com"],
+    ["MCP_BASE_URL", "http://mcp.example.com"],
+    ["AUTHENTIK_URL", "auth.example.com"],
+    ["AUTHENTIK_URL", "ftp://auth.example.com"],
+    ["MCP_BASE_URL", "https://mcp.example.com/?x=1"],
+  ]) {
+    const result = loadSetting({ [name]: value }, "1");
+    assert.equal(result.status, 1, `${name}=${value}`);
+    assert.match(result.error, new RegExp(name));
+  }
+});
+
+test("ports must be whole numbers from 1 to 65535", () => {
+  assert.deepEqual(loadSetting({ MCP_PORT: "8080", PROXMOX_SSH_PORT: "2222", PROXMOX_PORT: "8443" }, "[CONFIG.server.port, CONFIG.ssh.port, CONFIG.proxmox.port]").value, [8080, 2222, "8443"]);
+  for (const name of ["MCP_PORT", "PROXMOX_SSH_PORT", "PROXMOX_PORT"]) {
+    for (const value of ["0", "65536", "22abc", "-1", "1.5"]) {
+      const result = loadSetting({ [name]: value }, "1");
+      assert.equal(result.status, 1, `${name}=${value}`);
+    }
+  }
+});

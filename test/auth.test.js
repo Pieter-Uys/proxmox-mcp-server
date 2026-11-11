@@ -118,8 +118,8 @@ test("allowlist: unset lets in anyone Authentik signs in, as before", async () =
   });
 });
 
-test("allowlist: a JWT user matches by username, email or sub, ignoring case", async () => {
-  for (const allowedUsers of [["alice"], ["alice@example.com"], ["subject-123"], ["bob", "alice"]]) {
+test("allowlist: typed entries match their own claim, untyped ones the username, ignoring case", async () => {
+  for (const allowedUsers of [["alice"], ["user:alice"], ["email:alice@example.com"], ["sub:subject-123"], ["bob", "alice"]]) {
     await withSettings(SECURITY, { allowedUsers }, async () => {
       authTestHooks.reset();
       authTestHooks.setSigningKeys({ [KEY_ID]: publicKey });
@@ -151,14 +151,44 @@ test("allowlist: also applies to tokens already in the verified-token cache", as
 });
 
 // ─── Client IP for the audit log ────────────────────────────────────────────
+test("allowlist: an entry never matches a different claim (second audit R9)", async () => {
+  // Someone who sets their email to a listed username must not get in, nor
+  // match a listed email or subject by username.
+  const cases = [
+    [["bob"], { preferred_username: "mallory", email: "bob" }],
+    [["bob"], { preferred_username: "mallory", sub: "bob" }],
+    [["alice@example.com"], { preferred_username: "mallory", email: "alice@example.com" }],
+    [["subject-123"], { preferred_username: "mallory", sub: "subject-123" }],
+    [["email:bob@example.com"], { preferred_username: "bob@example.com", email: "mallory@example.com" }],
+    [["sub:abc"], { preferred_username: "abc", sub: "other" }],
+    [["user:abc"], { preferred_username: "other", email: "abc", sub: "abc" }],
+  ];
+  for (const [allowedUsers, claims] of cases) {
+    await withSettings(SECURITY, { allowedUsers }, async () => {
+      authTestHooks.reset();
+      authTestHooks.setSigningKeys({ [KEY_ID]: publicKey });
+      const result = await verify(signJwt(validClaims({ email: undefined, sub: "s-default", ...claims })));
+      assert.equal(result.reason, "user not allowed", JSON.stringify([allowedUsers, claims]));
+    });
+  }
+});
+
 test("clientIp ignores cf-connecting-ip unless the server trusts a proxy", async () => {
   const req = { ip: "203.0.113.7", headers: { "cf-connecting-ip": "198.51.100.1" } };
   await withSettings(SECURITY, { trustProxyHops: 0 }, () => {
     assert.equal(clientIp(req), "203.0.113.7");
   });
-  await withSettings(SECURITY, { trustProxyHops: 1 }, () => {
+  // Behind a proxy that isn't Cloudflare, a client can still send the header,
+  // so it needs TRUST_CLOUDFLARE_HEADER as well (second audit R8).
+  await withSettings(SECURITY, { trustProxyHops: 1, trustCloudflareHeader: false }, () => {
+    assert.equal(clientIp(req), "203.0.113.7");
+  });
+  await withSettings(SECURITY, { trustProxyHops: 1, trustCloudflareHeader: true }, () => {
     assert.equal(clientIp(req), "198.51.100.1");
     assert.equal(clientIp({ ip: "203.0.113.7", headers: {} }), "203.0.113.7");
+  });
+  await withSettings(SECURITY, { trustProxyHops: 0, trustCloudflareHeader: true }, () => {
+    assert.equal(clientIp(req), "203.0.113.7", "never without a trusted proxy hop");
   });
 });
 

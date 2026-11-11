@@ -81,7 +81,7 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds, and a timeout says the command may still be running. |
 | **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `dataset`, ZFS properties) are restricted to safe formats. |
 | **Rate limiting** | OAuth and MCP routes are limited per client IP (`RATE_LIMIT_PER_MINUTE`). Over-limit requests get HTTP 429. `/health` is not limited. |
-| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0`. Rotate it with logrotate or similar on the host. |
+| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0` and `TRUST_CLOUDFLARE_HEADER=true`. Rotate it with logrotate or similar on the host. |
 
 ### Modes
 
@@ -136,6 +136,8 @@ The error at startup names the missing setting and how to get it. To start witho
 
 `run_community_script` has been removed: it held one HTTP response open for up to 20 minutes, which proxies and clients cut off long before, leaving the script running with no result. `COMMUNITY_SCRIPTS_REF` is ignored (the server warns if it is set). To run a script deliberately, use `host_shell` with approval.
 
+Behind a Cloudflare Tunnel, set `TRUST_CLOUDFLARE_HEADER=true` to keep recording real client IPs in the audit log; without it the log records the tunnel's address. `ALLOWED_USERS` entries without a prefix now match the username only: write `email:...` or `sub:...` for the others.
+
 Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` and `grep` run without approval only for files under `READONLY_PATHS`, and inside containers and VMs every file read asks. Add your own log directories to `READONLY_PATHS` if they come up often.
 
 ## Configuration
@@ -173,8 +175,8 @@ The server will not start unless the variables marked **required** are set, so a
 | --- | --- |
 | `MCP_PORT` | Port to listen on, default `3000` |
 | `MCP_BIND_ADDRESS` | IP address to listen on, default `0.0.0.0` (needed for Docker port publishing). With `AUTH_MODE` `log` or `off` it defaults to, and must be, `127.0.0.1` or `::1` |
-| `MCP_BASE_URL` | **Required.** Public HTTPS address of this server |
-| `AUTHENTIK_URL` | **Required.** Base URL of your Authentik instance |
+| `MCP_BASE_URL` | **Required.** Public HTTPS address of this server. Must be `https://` (`http://` only for localhost); a trailing slash is removed |
+| `AUTHENTIK_URL` | **Required.** Base URL of your Authentik instance. Must be `https://` (`http://` only for localhost), since signing keys are fetched from it; a trailing slash is removed |
 | `AUTHENTIK_APP_SLUG` | Authentik application slug, e.g. `proxmox-mcp` |
 | `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. **Required** unless `AUTH_MODE=off`. A JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Find it under Applications, Providers, your provider, Client ID. Waive with `ALLOW_ANY_AUDIENCE=yes` (not recommended) |
 | `ALLOW_UNPINNED_SSH_HOST`, `ALLOW_ANY_AUDIENCE` | Set to `yes` to start without `PROXMOX_SSH_HOST_KEY` or `AUTHENTIK_AUDIENCE`. The server warns at startup while either is in effect |
@@ -191,8 +193,9 @@ The server will not start unless the variables marked **required** are set, so a
 | `AUDIT_REQUIRED` | `true` (default): a tool call is refused if its audit entry can't be written, so nothing runs unrecorded. `false` runs it anyway and logs the failure |
 | `TOOL_TIMEOUT_SECONDS` | Longest a tool call may hold its HTTP response open, default `90`. Keep it below your proxy's and client's own limits (Cloudflare's is about 100 seconds) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
-| `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
-| `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. A value that lists no entries (such as `,`) stops the server at startup. |
+| `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. |
+| `TRUST_CLOUDFLARE_HEADER` | `true` to record Cloudflare's `cf-connecting-ip` as the client IP in the audit log. Needs `TRUST_PROXY_HOPS` above `0`. Default `false`: behind another proxy (nginx, Traefik, Caddy) a client could set that header and forge its address |
+| `ALLOWED_USERS` | Optional comma-separated entries, each matching one claim only: `user:alice` (username), `email:alice@example.com`, `sub:<subject id>`. An entry without a prefix matches the username only. Checked on every request, including cached tokens; others are refused with `user not allowed`. Unset allows anyone Authentik signs in. An unknown prefix, or a value with no entries, stops the server at startup. `ALLOWED_GROUPS` is often the simpler choice |
 | `ALLOWED_GROUPS` | Optional comma-separated Authentik group names (from the token's `groups` claim). Members are allowed. With both lists set, matching either is enough. |
 | `ALLOW_INSECURE_AUTH` | Must be `yes` for `AUTH_MODE=log` or `off` to start. Local testing only |
 
@@ -218,6 +221,7 @@ The suite covers:
 - `vm_ssh` IP validation, the private-range default, `VM_SSH_ALLOWED_CIDRS`, `hostKey` and the password gate
 - SSH host key pinning, the output cap and that a failing output handler can't crash the process
 - JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS`, `ALLOWED_GROUPS`, unusable JWKS keys, non-JWT tokens refused without a network call, and the token cache
+- typed `ALLOWED_USERS` entries never matching a different claim, `cf-connecting-ip` only with `TRUST_CLOUDFLARE_HEADER`, https-only service URLs, port ranges, and `tools/call` notifications refused
 - `AUTH_MODE` `log`/`off` refusing to start without `ALLOW_INSECURE_AUTH=yes`, and binding to loopback
 - the `TOOL_TIMEOUT_SECONDS` ceiling on every tool call
 

@@ -39,7 +39,7 @@ export async function requireAuth(req, res, next) {
 // req.ip already follows Express's trust proxy setting.
 export function clientIp(req) {
   const forwarded = req.headers["cf-connecting-ip"];
-  return SECURITY.trustProxyHops > 0 && forwarded ? forwarded : req.ip;
+  return SECURITY.trustProxyHops > 0 && SECURITY.trustCloudflareHeader && forwarded ? forwarded : req.ip;
 }
 
 // Logs every failure, and successes only when freshly verified (not cache hits).
@@ -112,8 +112,17 @@ async function verifyToken(token) {
 function isUserAllowed({ identities, groups }) {
   const { allowedUsers, allowedGroups } = SECURITY;
   if (!allowedUsers && !allowedGroups) return true;
-  const listed = (allowed, values) => Boolean(allowed) && values.some((value) => allowed.includes(value.toLowerCase()));
-  return listed(allowedUsers, identities) || listed(allowedGroups, groups);
+  const inGroup = Boolean(allowedGroups) && groups.some((group) => allowedGroups.includes(group.toLowerCase()));
+  return inGroup || Boolean(allowedUsers?.some((entry) => entryMatches(entry, identities)));
+}
+
+// "email:x" matches only the email claim, "sub:x" only the subject, and
+// "user:x" or a bare "x" only the username, so no claim stands in for another.
+function entryMatches(entry, identities) {
+  const separator = entry.indexOf(":");
+  const [claim, value] = separator === -1 ? ["user", entry] : [entry.slice(0, separator), entry.slice(separator + 1)];
+  const actual = identities[claim];
+  return typeof actual === "string" && actual.toLowerCase() === value;
 }
 
 // Returns the token from "Authorization: Bearer <token>", or null. Plain string
@@ -135,10 +144,10 @@ function usernameFromClaims(claims) {
 }
 
 // Every name ALLOWED_USERS may list for this user: username, email and subject id.
+// The claims ALLOWED_USERS entries can name, each kept apart by type.
 function identitiesFromClaims(claims) {
-  return [claims.preferred_username, claims.email, claims.sub].filter(
-    (value) => typeof value === "string" && value !== "",
-  );
+  const text = (value) => (typeof value === "string" && value !== "" ? value : undefined);
+  return { user: text(claims.preferred_username), email: text(claims.email), sub: text(claims.sub) };
 }
 
 // Authentik's profile scope puts the user's group names in `groups`.

@@ -1,0 +1,28 @@
+# Keeps the pinned versions moving: GitHub Actions are pinned to commit SHAs,
+# the Docker base image to a digest, and npm packages by the lockfile. Without
+# this, the pins only ever get older. Each update arrives as its own PR, so it
+# goes through CI and review like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Minor and patch updates together, so they don't flood the PR list.
+      # Major updates still come one by one.
+      minor-and-patch:
+        update-types: [minor, patch]

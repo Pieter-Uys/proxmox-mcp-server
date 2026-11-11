@@ -97,7 +97,7 @@ Then bind the application to the users or groups allowed to use it.
 Two settings tighten this further:
 
 - `AUTHENTIK_AUDIENCE` (**required**): set it to the provider's Client ID, under Applications, Providers, your provider. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider. It refuses to start without it, unless `ALLOW_ANY_AUDIENCE=yes`.
-- `ALLOWED_USERS`: a comma-separated list of usernames, emails or subject IDs. It is a second check after the application binding, applied on every request. Usernames or subject IDs are the safer choice: depending on your Authentik flows, users may be able to change their own email address.
+- `ALLOWED_USERS`: a comma-separated list of typed entries, each checked against one claim only: `user:alice`, `email:alice@example.com` or `sub:<subject id>`. An entry without a prefix is a username. It is a second check after the application binding, applied on every request. Prefer `user:` or `sub:`: depending on your Authentik flows, users may be able to change their own email address.
 - `ALLOWED_GROUPS`: a comma-separated list of Authentik group names. Members of any of them are allowed. The names come from the token's `groups` claim, which Authentik's default `profile` scope mapping includes. With both lists set, a match on either is enough.
 
 ## 4. Configure the server
@@ -108,7 +108,7 @@ cp .env.example .env
 
 Fill in at least `PROXMOX_HOST`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_SSH_HOST`, `MCP_BASE_URL` (your public address) and `AUTHENTIK_URL`. The server refuses to start if any of them is missing. All settings are listed in the README.
 
-If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit. With it set, the audit log records the client IP from Cloudflare's `cf-connecting-ip` header. Behind a proxy other than Cloudflare, make sure the proxy removes any `cf-connecting-ip` header sent by clients.
+If the server sits behind a tunnel or reverse proxy, set `TRUST_PROXY_HOPS=1`, or every client will share one rate limit. Behind Cloudflare, also set `TRUST_CLOUDFLARE_HEADER=true` so the audit log records the client IP from Cloudflare's `cf-connecting-ip` header. Behind any other proxy leave it off: a client could send that header itself.
 
 ## 5. Run it
 
@@ -189,7 +189,7 @@ You should see `{"status":"ok","tools":12}`.
 1. In Cloudflare Zero Trust, go to **Networks, Tunnels, Create a tunnel** and install `cloudflared` on the machine running the server.
 2. Add a public hostname, for example `mcp.example.com`, pointing at `http://localhost:3000`.
 3. Set `MCP_BASE_URL=https://mcp.example.com` in `.env` and restart the server.
-4. Set `TRUST_PROXY_HOPS=1`.
+4. Set `TRUST_PROXY_HOPS=1` and `TRUST_CLOUDFLARE_HEADER=true`.
 
 ## 7. Connect Claude
 
