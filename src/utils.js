@@ -44,3 +44,11 @@ export function singleFlight(task) {
     return inFlight;
   };
 }
+
+// Drops trailing "/" with a plain loop. /\/+$/ backtracks quadratically on a
+// long run of slashes that isn't at the end, and these values come from config.
+export function stripTrailingSlashes(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "/") end--;
+  return text.slice(0, end);
+}

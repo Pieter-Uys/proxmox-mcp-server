@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { parseCidrList, ipVersion } from "./cidr.js";
+import { stripTrailingSlashes } from "./utils.js";
 import { HOST_KEY_FINGERPRINT } from "./constants.js";
 
 // ─── Required settings ─────────────────────────────────────────────────────
@@ -65,12 +66,13 @@ function parseReadonlyPaths(name) {
   const raw = process.env[name];
   if (raw === undefined || !raw.trim()) return DEFAULT_READONLY_PATHS;
   const entries = raw.split(",").map((entry) => entry.trim());
-  const invalid = entries.find((entry) => !entry.startsWith("/") || /(^|\/)\.\.?(\/|$)/.test(entry));
+  const hasDotSegment = (entry) => entry.split("/").some((segment) => segment === "." || segment === "..");
+  const invalid = entries.find((entry) => !entry.startsWith("/") || hasDotSegment(entry));
   if (invalid !== undefined) {
     console.error(`${name} entries must be absolute paths without . or .. segments, got "${invalid}".`);
     process.exit(1);
   }
-  return entries.map((entry) => entry.replace(/\/+$/, "") || "/");
+  return entries.map((entry) => stripTrailingSlashes(entry) || "/");
 }
 
 // Reads an optional comma-separated list, lower-cased, or null when unset or
