@@ -494,12 +494,20 @@ test("everyday read options keep working under the exact allowlists", () => {
   }
 });
 
+// One command per line; each must be refused (or allowed) by the read-only check.
+const assertRefused = (text) => {
+  for (const command of lines(text)) assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+};
+const assertAllowed = (text) => {
+  for (const command of lines(text)) assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+};
+
 // ─── Second audit: optional option values (R1) ──────────────────────────────
 // journalctl's -n/--lines takes the next word only if it parses as [+]N or
 // "all" (systemd journalctl.c: OPTION_OPTIONAL_ARG, parse_lines graceful);
 // anything else is parsed as an option of its own.
 test("journalctl -n/--lines never hides the option after it", () => {
-  for (const command of lines(`
+  assertRefused(`
     journalctl -n --vacuum-time=1s
     journalctl --lines --vacuum-size=1M
     journalctl -n --rotate
@@ -507,10 +515,8 @@ test("journalctl -n/--lines never hides the option after it", () => {
     journalctl -n --file=/path/to/other.journal
     journalctl -n -D /var/log/journal
     journalctl -rn --rotate
-  `)) {
-    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
-  }
-  for (const command of lines(`
+  `);
+  assertAllowed(`
     journalctl -n 50
     journalctl -n50
     journalctl -n +10
@@ -522,13 +528,11 @@ test("journalctl -n/--lines never hides the option after it", () => {
     journalctl -rn 20
     journalctl --since -1h
     journalctl -S -2d -p err
-  `)) {
-    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
-  }
+  `);
 });
 
 test("a valued option never swallows a following word that starts with -", () => {
-  for (const command of lines(`
+  assertRefused(`
     journalctl -u --rotate
     journalctl --unit --vacuum-time=1s
     journalctl -g --flush
@@ -541,9 +545,7 @@ test("a valued option never swallows a following word that starts with -", () =>
     zpool list -o --bogus
     pvesm status --storage --delete
     qm config 100 --snapshot --delete
-  `)) {
-    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
-  }
+  `);
 });
 
 // ─── Second audit: ps (R2) ──────────────────────────────────────────────────
@@ -551,7 +553,7 @@ test("a valued option never swallows a following word that starts with -", () =>
 // try_bsd), where a word containing e shows every process's environment. So
 // ps accepts only shapes whose values can't fail to parse.
 test("ps: only known shapes pass, so the BSD retry can never print environments", () => {
-  for (const command of lines(`
+  assertRefused(`
     ps -auxe
     ps -auxeww
     ps -eauxe
@@ -567,10 +569,8 @@ test("ps: only known shapes pass, so the BSD retry can never print environments"
     ps aux e
     ps axe
     ps -C -e
-  `)) {
-    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
-  }
-  for (const command of lines(`
+  `);
+  assertAllowed(`
     ps
     ps aux
     ps auxww
@@ -585,14 +585,12 @@ test("ps: only known shapes pass, so the BSD retry can never print environments"
     ps -C pveproxy -o pid,%cpu,%mem,args
     ps -eo pid,user,comm --sort=-%cpu
     ps -e -o pid,rss --sort -rss --no-headers
-  `)) {
-    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
-  }
+  `);
 });
 
 // ─── Second audit: /proc per-process files (R3) ─────────────────────────────
 test("per-process /proc files are sensitive except a short readable list", () => {
-  for (const command of lines(`
+  assertRefused(`
     cat /proc/1/task/1/environ
     cat /proc/self/task/12/environ
     ls /proc/1/task/1/root
@@ -605,10 +603,8 @@ test("per-process /proc files are sensitive except a short readable list", () =>
     cat /proc/self/environ
     cat /proc/thread-self/environ
     cat /proc/1/maps
-  `)) {
-    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
-  }
-  for (const command of lines(`
+  `);
+  assertAllowed(`
     cat /proc/1/status
     cat /proc/self/stat
     cat /proc/1/cmdline
@@ -618,9 +614,7 @@ test("per-process /proc files are sensitive except a short readable list", () =>
     cat /proc/loadavg
     cat /proc/cpuinfo
     ls /proc/1
-  `)) {
-    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
-  }
+  `);
 });
 
 // ─── Known bypass regressions (both audits) ─────────────────────────────────
