@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TOOLS, TOOL_LIST, findTool, startupSetting, callTool, communityScriptSource } from "../src/tools.js";
+import { TOOLS, TOOL_LIST, findTool, startupSetting, callTool } from "../src/tools.js";
 import { getPolicyBlockReason } from "../src/policy.js";
 import { CONFIG, SECURITY } from "../src/config.js";
 import { parseCidrList } from "../src/cidr.js";
@@ -9,7 +9,7 @@ import { validateArgs, checkRequiredWhen } from "../src/validate.js";
 
 const blocked = (tool, args) => getPolicyBlockReason(TOOLS[tool], args) !== null;
 
-test("exposes the 13 documented tools", () => {
+test("exposes the 12 documented tools", () => {
   assert.deepEqual(TOOL_LIST.map((tool) => tool.name).sort(), [
     "backup_vm",
     "create_lxc",
@@ -20,7 +20,6 @@ test("exposes the 13 documented tools", () => {
     "manage_vm",
     "network_config",
     "proxmox_api",
-    "run_community_script",
     "set_boot_order",
     "storage_config",
     "vm_ssh",
@@ -111,11 +110,6 @@ test("backup_vm: every mode needs confirmation, and stop says it shuts the guest
     assert.equal(blocked("backup_vm", { vmid: 101, mode }), true, String(mode));
   }
   assert.match(getPolicyBlockReason(TOOLS.backup_vm, { vmid: 101, mode: "stop" }), /shuts the guest down/);
-});
-
-test("run_community_script always needs confirmation", () => {
-  assert.equal(blocked("run_community_script", { script: "pihole" }), true);
-  assert.equal(blocked("run_community_script", { script: "pihole", confirm: true }), false);
 });
 
 // ─── vm_ssh scope and password handling ─────────────────────────────────────
@@ -225,52 +219,6 @@ test("vm_ssh: run() re-checks the limits, so a direct callTool can't skip them",
   );
 });
 
-// ─── Community scripts: pinned ref ──────────────────────────────────────────
-const SCRIPTS_BASE = "https://raw.githubusercontent.com/community-scripts/ProxmoxVE";
-
-test("communityScriptSource uses main when no ref is pinned", () => {
-  assert.deepEqual(communityScriptSource("pihole", undefined), {
-    ref: "main",
-    pinned: false,
-    url: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
-  });
-});
-
-test("communityScriptSource uses the pinned commit or tag in place of main", () => {
-  const sha = "0123456789abcdef0123456789abcdef01234567";
-  assert.deepEqual(communityScriptSource("pihole", sha), {
-    ref: sha,
-    pinned: true,
-    url: `${SCRIPTS_BASE}/${sha}/ct/pihole.sh`,
-  });
-  assert.equal(communityScriptSource("nextcloud", "v2024.11.01").url, `${SCRIPTS_BASE}/v2024.11.01/ct/nextcloud.sh`);
-});
-
-test("run_community_script: the command and confirmation name the exact URL and ref", async () => {
-  const previous = CONFIG.communityScripts.ref;
-  try {
-    CONFIG.communityScripts.ref = undefined;
-    const tool = TOOLS.run_community_script;
-    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/main/ct/pihole.sh)"`);
-    const unpinned = getPolicyBlockReason(tool, { script: "pihole" });
-    assert.match(unpinned, new RegExp(`${SCRIPTS_BASE}/main/ct/pihole\\.sh`));
-    assert.match(unpinned, /unpinned branch.*COMMUNITY_SCRIPTS_REF/);
-    assert.deepEqual(tool.auditFields({ script: "pihole" }), {
-      scriptUrl: `${SCRIPTS_BASE}/main/ct/pihole.sh`,
-      scriptRef: "main",
-      scriptPinned: false,
-    });
-
-    CONFIG.communityScripts.ref = "v1.2.3";
-    assert.equal(tool.shellCommand({ script: "pihole" }), `bash -c "$(curl -fsSL ${SCRIPTS_BASE}/v1.2.3/ct/pihole.sh)"`);
-    const pinned = getPolicyBlockReason(tool, { script: "pihole" });
-    assert.match(pinned, /v1\.2\.3\/ct\/pihole\.sh.*pinned to ref v1\.2\.3/);
-    assert.equal(tool.auditFields({ script: "pihole" }).scriptPinned, true);
-  } finally {
-    CONFIG.communityScripts.ref = previous;
-  }
-});
-
 // ─── One confirmation rule: every non-read action (audit M1) ───────────────
 const NON_READ_CALLS = [
   ["manage_vm", { vmid: 101, action: "start" }],
@@ -346,7 +294,6 @@ test("TOOL_MODE=readonly blocks every confirm-gated call, even with confirm: tru
       ["manage_vm", { vmid: 101, action: "delete" }],
       ["proxmox_api", { method: "DELETE", path: "/nodes/pve/qemu/100" }],
       ["host_shell", { command: "reboot" }],
-      ["run_community_script", { script: "pihole" }],
     ]) {
       assert.match(getPolicyBlockReason(TOOLS[tool], { ...args, confirm: true }) ?? "", /TOOL_MODE=readonly/, tool);
     }
@@ -377,8 +324,6 @@ test("rejects values that could break out of shell commands or API paths", () =>
   assert.ok(problems("storage_config", { action: "zfs_create", dataset: "tank/x; rm -rf /" }).length);
   assert.ok(problems("storage_config", { action: "zfs_create", dataset: "tank/$(reboot)" }).length);
   assert.ok(problems("storage_config", { action: "zfs_create", zfsCommand: "destroy -r rpool" }).length, "zfsCommand is gone");
-  assert.ok(problems("run_community_script", { script: "pihole; reboot" }).length);
-  assert.ok(problems("run_community_script", { script: "../evil" }).length);
 });
 
 test("rejects out-of-range ids, unknown actions and unknown arguments", () => {

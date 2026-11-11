@@ -1,5 +1,5 @@
 import { CONFIG, SECURITY } from "./config.js";
-import { COMMUNITY_SCRIPT_TIMEOUT_MS, HOST_KEY_FINGERPRINT } from "./constants.js";
+import { HOST_KEY_FINGERPRINT } from "./constants.js";
 import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
@@ -21,34 +21,6 @@ function dispatchByAction(actions) {
 }
 
 const NETWORK_RELOAD_COMMAND = "ifreload -a";
-
-// ─── Community scripts ──────────────────────────────────────────────────────
-// Remote code that runs as root. COMMUNITY_SCRIPTS_REF pins the commit or tag;
-// without it the main branch is used, and the confirmation message and audit
-// entry name the exact URL so the user can see what will run.
-const COMMUNITY_SCRIPTS_RAW_URL = "https://raw.githubusercontent.com/community-scripts/ProxmoxVE";
-const COMMUNITY_SCRIPTS_DEFAULT_REF = "main";
-
-export function communityScriptSource(script, ref = CONFIG.communityScripts.ref) {
-  const resolvedRef = ref || COMMUNITY_SCRIPTS_DEFAULT_REF;
-  return {
-    ref: resolvedRef,
-    pinned: Boolean(ref),
-    url: `${COMMUNITY_SCRIPTS_RAW_URL}/${resolvedRef}/ct/${script}.sh`,
-  };
-}
-
-function communityScriptCommand(args) {
-  return `bash -c "$(curl -fsSL ${communityScriptSource(args.script).url})"`;
-}
-
-function communityScriptConfirmationReason(args) {
-  const { url, ref, pinned } = communityScriptSource(args.script);
-  const pinNote = pinned
-    ? `pinned to ref ${ref} by COMMUNITY_SCRIPTS_REF`
-    : `ref ${ref}, an unpinned branch that can change at any time; set COMMUNITY_SCRIPTS_REF to pin it`;
-  return `Community scripts download and run remote code as root. This runs ${url} (${pinNote}).`;
-}
 
 // zfs_create builds `zfs create` from structured arguments. It used to run
 // `zfs <anything>`, so `destroy -r rpool/data` was valid input to an action
@@ -134,7 +106,6 @@ function requireWhen(field, values, required) {
 //   shellCommand(args)        shell command this call runs, or null (SHELL_MODE applies)
 //   requiredWhen              arguments that only some actions need (requireWhen)
 //   confirmationReason(args)  why this call needs confirm: true, or null
-//   auditFields(args)         extra fields for this call's audit entry
 //   run(args, node)           performs the call; returns text or JSON data
 export const TOOLS = {
   proxmox_api: {
@@ -254,36 +225,6 @@ export const TOOLS = {
       });
       return formatCommandResult(result);
     },
-  },
-
-  run_community_script: {
-    // Downloads remote code and runs it as root.
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-    description:
-      "Run a community-scripts.org LXC script on Proxmox. Always requires confirm: true (downloads and runs remote code as root). Untested through this server: it runs without a terminal (these scripts normally expect one) and stops after 20 minutes, which may leave an install half done.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        script: {
-          type: "string",
-          pattern: "^[a-z0-9][a-z0-9-]*$",
-          description: "Script name e.g. pihole, nextcloud, unbound",
-        },
-      },
-      required: ["script"],
-    },
-    shellCommand: communityScriptCommand,
-    confirmationReason: communityScriptConfirmationReason,
-    auditFields: (args) => {
-      const { url, ref, pinned } = communityScriptSource(args.script);
-      return { scriptUrl: url, scriptRef: ref, scriptPinned: pinned };
-    },
-    run: (args) => runOnHost(communityScriptCommand(args), { timeoutMs: COMMUNITY_SCRIPT_TIMEOUT_MS }),
   },
 
   get_status: {
