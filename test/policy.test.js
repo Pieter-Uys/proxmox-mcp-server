@@ -306,10 +306,6 @@ test("readonly mode also covers tools that run shell commands indirectly", async
       getPolicyBlockReason(TOOLS.network_config, { action: "apply", confirm: true }),
       /SHELL_MODE=readonly/,
     );
-    assert.match(
-      getPolicyBlockReason(TOOLS.run_community_script, { script: "pihole", confirm: true }),
-      /SHELL_MODE=readonly/,
-    );
   });
 });
 

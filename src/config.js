@@ -43,18 +43,6 @@ function parseOptionalHostKey(name) {
   return raw;
 }
 
-// Reads an optional git ref (commit SHA or tag). It ends up in a shell command
-// and a URL path, so only plain ref characters are accepted.
-function parseOptionalGitRef(name) {
-  const raw = process.env[name]?.trim();
-  if (!raw) return undefined;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(raw)) {
-    console.error(`${name} must be a commit SHA or tag (letters, digits, . _ -), got "${raw}".`);
-    process.exit(1);
-  }
-  return raw;
-}
-
 // The default readable roots: logs, kernel and process status, and host
 // configuration that holds no credentials. /etc/pve/priv and other secret
 // paths under these are still refused by the deny list.
@@ -100,6 +88,16 @@ function parseOptionalList(name) {
     process.exit(1);
   }
   return entries;
+}
+
+// Reads a whole number of seconds, at least 1.
+function parsePositiveSeconds(name, fallback) {
+  const seconds = parseNonNegativeInt(name, fallback);
+  if (seconds < 1) {
+    console.error(`${name} must be at least 1.`);
+    process.exit(1);
+  }
+  return seconds;
 }
 
 // Private address ranges: RFC 1918 for IPv4 and unique local fc00::/7 for IPv6.
@@ -154,11 +152,6 @@ export const CONFIG = {
     // same provider can't be replayed here.
     audience: process.env.AUTHENTIK_AUDIENCE?.trim() || undefined,
   },
-  communityScripts: {
-    // Commit SHA or tag of community-scripts/ProxmoxVE that run_community_script
-    // fetches from. Unset means the main branch, which can change at any time.
-    ref: parseOptionalGitRef("COMMUNITY_SCRIPTS_REF"),
-  },
 };
 
 // ─── Security settings ──────────────────────────────────────────────────────
@@ -174,6 +167,10 @@ export const SECURITY = {
   // true (default): a tool call is refused if its audit entry can't be
   // written, so nothing runs unrecorded. false: run anyway and log the failure.
   auditRequired: (process.env.AUDIT_REQUIRED || "true").toLowerCase(),
+  // The longest a tool call may hold its HTTP response open. Proxies, tunnels
+  // and MCP clients cut long responses off on their own, leaving the caller
+  // with a gateway error and no result, so the server answers first.
+  toolTimeoutMs: parsePositiveSeconds("TOOL_TIMEOUT_SECONDS", "90") * 1000,
   // Requests per client IP per minute across the OAuth and MCP routes. 0 disables.
   rateLimitPerMinute: parseNonNegativeInt("RATE_LIMIT_PER_MINUTE", "120"),
   // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
@@ -269,3 +266,8 @@ requirePinOrWaiver({
     "AUTHENTIK_AUDIENCE is not set, so tokens issued to any application on this Authentik provider would be accepted. " +
     "Set it to the provider's Client ID (Authentik admin: Applications, Providers, your provider, Client ID).",
 });
+
+// run_community_script was removed (it held one HTTP response open for up to
+// 20 minutes). Say so rather than silently ignoring an old setting.
+if (process.env.COMMUNITY_SCRIPTS_REF)
+  console.warn("COMMUNITY_SCRIPTS_REF is set but no longer used: run_community_script was removed.");

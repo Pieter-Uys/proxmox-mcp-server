@@ -39,7 +39,7 @@ Check it is up with `curl http://localhost:3000/health`.
 
 ## Tools
 
-The server exposes 13 tools.
+The server exposes 12 tools.
 
 | Tool | What it does | Needs `confirm: true` for |
 | --- | --- | --- |
@@ -55,7 +55,6 @@ The server exposes 13 tools.
 | `host_shell` | Run a command on the Proxmox host over SSH | Anything off the read-only allowlist |
 | `lxc_shell` | Run a command inside an LXC via `pct exec` | Anything off the read-only allowlist |
 | `vm_ssh` | SSH into a VM by IP address and run a command, with the server's SSH key. Private ranges only by default (`VM_SSH_ALLOWED_CIDRS`). An optional `hostKey` pins the VM's key; a `password` needs `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` | Anything off the read-only allowlist |
-| `run_community_script` | Run a [community-scripts.org](https://community-scripts.org) LXC script, from the commit or tag in `COMMUNITY_SCRIPTS_REF` if set. Untested through this server: runs without a terminal, stops after 20 minutes | Always (runs remote code as root) |
 
 ### MCP annotations
 
@@ -64,7 +63,7 @@ Every tool declares all four MCP annotation hints in `tools/list`, so clients ca
 - `readOnlyHint`: only `get_status` is read-only.
 - `destructiveHint`: set on anything that can delete, stop or overwrite something.
 - `idempotentHint`: set where repeating the call has no further effect.
-- `openWorldHint`: set on the shell tools, `vm_ssh` and `run_community_script`, since they can reach beyond the Proxmox host.
+- `openWorldHint`: set on the shell tools and `vm_ssh`, since they can reach beyond the Proxmox host.
 
 A test keeps these hints consistent with each tool's confirmation and shell policy.
 
@@ -75,14 +74,14 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | Layer | What it does |
 | --- | --- |
 | **Authentication** | Every `/mcp` request needs a bearer token. JWTs are verified locally against Authentik's signing keys (RS256 only, issuer, expiry, and audience when `AUTHENTIK_AUDIENCE` is set). Anything that isn't a JWT is refused without contacting Authentik (Authentik's access tokens are JWTs). Keys in the JWKS that can't verify RS256 signatures are skipped. Results are cached for up to 5 minutes per token hash, never past the token's own expiry. `ALLOWED_USERS` and `ALLOWED_GROUPS` optionally limit which signed-in users are accepted, checked on every request. |
-| **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, community scripts, non-GET `proxmox_api` calls, GETs that read guest files or secrets (the QEMU guest agent, `cloudinit/dump`, backup `file-restore`, and `scan`, which makes the host probe targets; a list of known cases, not a guarantee), and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
+| **Confirmation** | One rule: every call that is not a pure read needs `confirm: true`. That covers every `manage_vm` action (including `start`), creating containers, backups, boot order, firewall, network and storage changes, ZFS, non-GET `proxmox_api` calls, GETs that read guest files or secrets (the QEMU guest agent, `cloudinit/dump`, backup `file-restore`, and `scan`, which makes the host probe targets; a list of known cases, not a guarantee), and any shell command off the read-only allowlist, or that reads a path that can hold secrets (`/etc/shadow`, `/etc/pve/priv`, SSH keys, `*.pem`, `*.key`, `.env` files and similar), or that prints other processes' environments (`ps e`), or that greps recursively, are rejected unless sent with `confirm: true`. The rejection tells the model to get explicit approval from the user first. |
 | **File reads** | `cat`, `head`, `tail` and `grep` are read-only on the host only for files under `READONLY_PATHS` (logs, `/proc`, `/sys`, `/etc/pve` and a few host config files by default), and never for a known secret path. Inside containers and VMs (`lxc_shell`, `vm_ssh`) every file read needs `confirm: true`, because secrets there can be anywhere. `ls`, `stat`, `find` and `du`, which show names rather than contents, are unaffected. |
 | **Shell modes** | `SHELL_MODE` controls every call that runs a shell command, including `storage_config` ZFS actions and `network_config apply`. |
 | **Hard limits** | Refusals that `confirm: true` can't override: `vm_ssh` needs a literal IP address inside `VM_SSH_ALLOWED_CIDRS` (private ranges by default), and refuses a `password` unless `VM_SSH_PASSWORD_AUTH=on` and a `hostKey` is pinned. |
-| **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds (community scripts after 20 minutes), and a timeout says the command may still be running. |
+| **SSH** | `PROXMOX_SSH_HOST_KEY` pins the Proxmox host's key. Output is capped at 1 MiB per command. Past that the channel is closed and the result is marked truncated; the remote command isn't killed and may keep running, and the result says so. Commands time out after 60 seconds, and a timeout says the command may still be running. |
 | **Argument validation** | Every tool call is checked against the tool's input schema (types, enums, required fields, no unknown arguments) before policy runs. Values that reach shell commands or API paths (`vmid`, `node`, `iface`, `storage`, `script`, `dataset`, ZFS properties) are restricted to safe formats. |
 | **Rate limiting** | OAuth and MCP routes are limited per client IP (`RATE_LIMIT_PER_MINUTE`). Over-limit requests get HTTP 429. `/health` is not limited. |
-| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. Community script calls also record the script URL and git ref. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0`. Rotate it with logrotate or similar on the host. |
+| **Audit log** | Every tool call and auth event is written as JSON Lines to `AUDIT_LOG`, with user, source IP, arguments (secrets redacted), outcome and duration. The source IP comes from `cf-connecting-ip` only when `TRUST_PROXY_HOPS` is above `0`. Rotate it with logrotate or similar on the host. |
 
 ### Modes
 
@@ -93,13 +92,13 @@ A test keeps these hints consistent with each tool's confirmation and shell poli
 | `SHELL_MODE` | `full` (default, risky commands need confirmation), `readonly` (single allowlisted read-only commands, no chaining, no sensitive paths, no follow modes), `off` |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default, `vm_ssh` uses the server's key only), `on` |
 
-The server refuses to start if any of these has an unrecognised value, or if `VM_SSH_ALLOWED_CIDRS` or `COMMUNITY_SCRIPTS_REF` is malformed.
+The server refuses to start if any of these has an unrecognised value, or if `VM_SSH_ALLOWED_CIDRS`, `READONLY_PATHS` or `TOOL_TIMEOUT_SECONDS` is malformed.
 
 ### Things to know
 
 - **`confirm: true` is a speed bump, not a hard boundary.** The model sets it. It works alongside the client's own tool-approval prompts and the audit trail.
 - **Set `PROXMOX_SSH_HOST_KEY`**, and narrow `VM_SSH_ALLOWED_CIDRS` to your VM subnets. The default allows every private range, which includes the Proxmox host and the rest of your LAN.
-- **Pin community scripts** with `COMMUNITY_SCRIPTS_REF` if you use `run_community_script`, or disable shell tools if you don't.
+- **No tool call holds its HTTP response open longer than `TOOL_TIMEOUT_SECONDS`** (90 by default), because proxies, tunnels and MCP clients cut long responses off on their own. The reply then says the work may still be running on the host.
 - **One JSON-RPC request per POST.** Batches (a JSON array) are refused with Invalid Request, as in MCP revision 2025-06-18, so one HTTP request can't fan out into many tool calls. Notifications never get a reply. A tool that fails while running returns a result with `isError: true`, so the model can see what went wrong. Calling a tool that doesn't exist is a protocol error (Invalid params), as the MCP spec requires.
 - **Proxmox API calls time out after 30 seconds** and fail if the reply is larger than 5 MiB, with a message to narrow the query.
 - **CORS allows any origin** (`Access-Control-Allow-Origin: *`). This is deliberate: clients send a bearer token in the `Authorization` header and the server sets no cookies, so a page on another origin has no ambient credentials to abuse. If you only expect specific browser-based clients, tighten it in `server.js`.
@@ -112,8 +111,7 @@ These hold even with every setting above in place:
 - **Read-only means "does not change the host", not "safe to show the model".** Commands on the allowlist run as the SSH user, usually root, and print what they read. The sensitive-path check covers known secret locations; the SSH user's own file permissions are the real limit.
 - **`/etc/pve` is readable by default**, and guest configs there (`/etc/pve/qemu-server/*.conf`) can hold a cloud-init password hash, the same data `qm config` shows. Remove `/etc/pve` from `READONLY_PATHS` if that matters to you.
 - **The read-only allowlist is best effort.** It is a parser for a small set of commands, not a sandbox. Symlinks, hard links, copies of secrets in unexpected places, or an option it doesn't know about can still expose data or change state without confirmation. `qm config` and `pct config` output can include secrets a user stored there. Use `SHELL_MODE=readonly` or `off` where that matters.
-- **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS, `network_config apply` and community scripts run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
-- **Community scripts are only partly pinned.** `COMMUNITY_SCRIPTS_REF` pins the top-level script, but upstream scripts load their helpers from `community-scripts/core` on `main`.
+- **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS and `network_config apply` run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
 - **`vm_ssh` only verifies a VM's host key when the call includes `hostKey`.** Without it, a machine that can intercept traffic to the VM could impersonate it. Set `PROXMOX_SSH_HOST_KEY` for the Proxmox host itself.
 
 ### Protocol support
@@ -135,6 +133,8 @@ Revisit these when adding support for a newer revision.
 - `AUTHENTIK_AUDIENCE` (unless `AUTH_MODE=off`): the provider's Client ID in Authentik.
 
 The error at startup names the missing setting and how to get it. To start without one anyway, set `ALLOW_UNPINNED_SSH_HOST=yes` or `ALLOW_ANY_AUDIENCE=yes`.
+
+`run_community_script` has been removed: it held one HTTP response open for up to 20 minutes, which proxies and clients cut off long before, leaving the script running with no result. `COMMUNITY_SCRIPTS_REF` is ignored (the server warns if it is set). To run a script deliberately, use `host_shell` with approval.
 
 Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` and `grep` run without approval only for files under `READONLY_PATHS`, and inside containers and VMs every file read asks. Add your own log directories to `READONLY_PATHS` if they come up often.
 
@@ -189,7 +189,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `AUDIT_LOG` | Path to the JSON Lines audit log |
 | `READONLY_PATHS` | Comma-separated absolute paths whose files `cat`, `head`, `tail` and `grep` may read on the host without approval. Default: `/var/log,/sys,/proc,/etc/pve,/etc/network,/etc/hostname,/etc/hosts,/etc/os-release,/etc/apt/sources.list,/etc/apt/sources.list.d`. Setting it replaces the default. The deny list of secret paths still applies |
 | `AUDIT_REQUIRED` | `true` (default): a tool call is refused if its audit entry can't be written, so nothing runs unrecorded. `false` runs it anyway and logs the failure |
-| `COMMUNITY_SCRIPTS_REF` | Commit SHA or tag of `community-scripts/ProxmoxVE` that `run_community_script` fetches from. Unset uses `main`, which can change between the user's approval and the run; the confirmation message and audit entry then show the exact URL. See [Residual risks](#residual-risks) |
+| `TOOL_TIMEOUT_SECONDS` | Longest a tool call may hold its HTTP response open, default `90`. Keep it below your proxy's and client's own limits (Cloudflare's is about 100 seconds) |
 | `RATE_LIMIT_PER_MINUTE` | Requests per client IP per minute, default `120`. `0` disables. |
 | `TRUST_PROXY_HOPS` | Set to `1` behind a tunnel or single reverse proxy so limits apply per real client IP. Leave `0` when exposed directly. The audit log only uses Cloudflare's `cf-connecting-ip` header when this is above `0`; otherwise any client could set it. |
 | `ALLOWED_USERS` | Optional comma-separated usernames, emails or subject IDs allowed to use the server, checked on every request, including cached tokens. Others are refused with `user not allowed`. Unset allows anyone Authentik signs in. A value that lists no entries (such as `,`) stops the server at startup. |
@@ -219,7 +219,7 @@ The suite covers:
 - SSH host key pinning, the output cap and that a failing output handler can't crash the process
 - JWT verification with locally signed tokens: signature, `kid`, algorithm (`none`, `HS256`), issuer, expiry, `nbf`, audience, `ALLOWED_USERS`, `ALLOWED_GROUPS`, unusable JWKS keys, non-JWT tokens refused without a network call, and the token cache
 - `AUTH_MODE` `log`/`off` refusing to start without `ALLOW_INSECURE_AUTH=yes`, and binding to loopback
-- community script URLs and their audit fields
+- the `TOOL_TIMEOUT_SECONDS` ceiling on every tool call
 
 ## Project layout
 

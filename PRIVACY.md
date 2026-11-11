@@ -10,16 +10,15 @@ Proxmox MCP Server is self-hosted software. It runs on your own infrastructure a
 
 ## What the server logs
 
-- **Audit log** (`AUDIT_LOG`, JSON Lines on local disk): timestamp, authenticated user, source IP, tool name, arguments, outcome and duration. For community scripts it also records the script URL and git ref. Fields named like passwords, secrets, tokens or private keys are redacted. Redaction is by field name only: a secret typed into a command string (for example `host_shell` with `mysql -pSecret`) is logged as written. Each tool call gets a `started` entry before it runs and an outcome entry after; with `AUDIT_REQUIRED=true` (the default) a call whose entry can't be written is refused. You control retention and rotation.
+- **Audit log** (`AUDIT_LOG`, JSON Lines on local disk): timestamp, authenticated user, source IP, tool name, arguments, outcome and duration. Fields named like passwords, secrets, tokens or private keys are redacted. Redaction is by field name only: a secret typed into a command string (for example `host_shell` with `mysql -pSecret`) is logged as written. Each tool call gets a `started` entry before it runs and an outcome entry after; with `AUDIT_REQUIRED=true` (the default) a call whose entry can't be written is refused. You control retention and rotation.
 - **Process logs** (stdout or journald): the JSON-RPC method, the tool name, the request id and whether the reply was an error, with control characters stripped. Tool arguments and results are never written to the process log.
 
 ## Network destinations
 
 - Your Proxmox host (API and SSH).
 - Your Authentik instance.
-- `raw.githubusercontent.com`, only when the `run_community_script` tool is used, to fetch the requested community script. It is fetched from the commit or tag in `COMMUNITY_SCRIPTS_REF`, or from the `main` branch if that is unset. The script itself then fetches further files from GitHub (the shared helpers in `community-scripts/core`), from the Proxmox host.
 
-The server does not use analytics or advertising services. When `run_community_script` fetches a script, `raw.githubusercontent.com` receives the request and its network metadata.
+The server does not use analytics or advertising services.
 
 ## Your responsibilities
 
