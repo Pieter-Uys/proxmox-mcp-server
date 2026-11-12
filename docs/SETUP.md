@@ -53,6 +53,7 @@ The shell tools (`host_shell`, `lxc_shell`, `vm_ssh`, ZFS and `network_config ap
 To set up the sudo tier, on the Proxmox host:
 
 ```
+apt install sudo                               # not installed on Proxmox VE by default
 useradd --create-home --shell /bin/bash mcp
 usermod -aG systemd-journal,adm mcp            # read logs without sudo
 install -m 440 -o root -g root deploy/sudoers.proxmox-mcp /etc/sudoers.d/proxmox-mcp
@@ -60,7 +61,7 @@ visudo -cf /etc/sudoers.d/proxmox-mcp          # must say "parsed OK"
 sudo -l -U mcp                                  # lists exactly the allowed forms
 ```
 
-The file needs sudo 1.9.10 or later (Proxmox VE 8 has 1.9.13). If your user isn't called `mcp`, replace the name in the file. Check the binary paths it names with `command -v pct qm pvesm zfs zpool ifreload`. Then set `PROXMOX_SSH_USER=mcp` and `PROXMOX_SSH_SUDO=on`, and use `mcp` in the commands below.
+The file needs the classic sudo, 1.9.10 or later, because it uses regular expressions to match whole argument strings (`sudo -V` shows the version). sudo-rs, the default on Ubuntu 25.10 and later, doesn't support them and rejects the file. If your user isn't called `mcp`, replace the name in the file. Check the binary paths it names with `command -v pct qm pvesm zfs zpool ifreload`. Then set `PROXMOX_SSH_USER=mcp` and `PROXMOX_SSH_SUDO=on`, and use `mcp` in the commands below.
 
 What changes in this tier:
 

@@ -80,7 +80,8 @@ test("PROXMOX_SSH_SUDO defaults to off and needs a non-root user when on", () =>
 const SUDOERS_PATH = new URL("../deploy/sudoers.proxmox-mcp", import.meta.url);
 const SUDOERS = fs.readFileSync(SUDOERS_PATH, "utf8");
 
-// sudoers needs , : = and \ escaped in arguments; undo that for matching.
+// Outside a regular expression, sudoers needs , : = and \ escaped in
+// arguments; inside one only # (sudoers(5)), so regexes are used as written.
 const unescapeSudoers = (text) => text.replaceAll(/\\([,:=\\])/g, "$1");
 
 const RULES = SUDOERS.split("\n")
@@ -90,7 +91,7 @@ const RULES = SUDOERS.split("\n")
     alias,
     name: binary.split("/").at(-1),
     match: args.startsWith("^")
-      ? (text) => new RegExp(unescapeSudoers(args), "s").test(text)
+      ? (text) => new RegExp(args, "s").test(text)
       : (text) => text === unescapeSudoers(args),
   }));
 
@@ -231,8 +232,19 @@ test("sudoers: zfs create allows exactly the properties the server allows", () =
 });
 
 // visudo checks the syntax only; the tests above check what the rules match.
-const hasVisudo = !spawnSync("visudo", ["--version"]).error;
-test("sudoers: visudo accepts the file", { skip: !hasVisudo && "visudo not installed" }, () => {
+// It needs the classic sudo 1.9.10+: sudo-rs (Ubuntu 25.10 and later, so the
+// CI runners) rejects regular expressions, and that is said in the template.
+function classicVisudoSkipReason() {
+  const probe = spawnSync("visudo", ["--version"], { encoding: "utf8" });
+  if (probe.error) return "visudo not installed";
+  const version = /visudo version (\d+)\.(\d+)\.(\d+)/i.exec(probe.stdout);
+  if (!version) return `not the classic visudo: ${probe.stdout.split("\n")[0]}`;
+  const [major, minor, patch] = version.slice(1).map(Number);
+  const atLeast1910 = major > 1 || (major === 1 && (minor > 9 || (minor === 9 && patch >= 10)));
+  return atLeast1910 ? false : `visudo ${version.slice(1).join(".")} predates regular expressions (1.9.10)`;
+}
+
+test("sudoers: visudo accepts the file", { skip: classicVisudoSkipReason() }, () => {
   const result = spawnSync("visudo", ["-cf", SUDOERS_PATH.pathname], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
