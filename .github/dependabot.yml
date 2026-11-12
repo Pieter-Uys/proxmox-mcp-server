@@ -15,6 +15,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Only digest and patch updates within the current Node line. A major
+      # bump would offer odd, non-LTS releases (25) as readily as LTS ones,
+      # so moving to the next LTS is done by hand (see the Dockerfile).
+      - dependency-name: node
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: npm
     directory: /

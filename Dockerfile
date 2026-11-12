@@ -3,7 +3,11 @@
 # Dependabot needs it to know which image to track and opens a PR for each new
 # digest (.github/dependabot.yml). SonarCloud's S8431 flags this form; it is
 # accepted on purpose.
-FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202
+#
+# Even-numbered Node releases only: odd ones (23, 25) are never LTS and reach
+# end of life within months. Dependabot skips major versions (see
+# dependabot.yml), so moving to the next LTS is a deliberate change here.
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
