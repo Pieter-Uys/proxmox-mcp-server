@@ -142,6 +142,8 @@ Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` 
 
 **From a version before the third security audit (November 2026):** every command on the read-only list now names the options it accepts, so a rarely used option to `ls`, `df`, `lsblk` or the others needs approval instead of running, and `free -s` and `free -c` (which repeat until the timeout) always do. `wc` and `du` refuse `--files0-from` and `--exclude-from`. `cat`, `head`, `tail` and `grep` with no file, or with `-`, read standard input and need approval. The default `READONLY_PATHS` no longer includes all of `/etc/pve`, only the cluster and guest configs listed under Configuration, because `domains.cfg` and `sdn/` hold credentials outside `priv`; those two are now on the deny list as well. Other files there need approval to read.
 
+**From a version before the fourth audit (November 2026):** `/authorize` and `/token` forward the client's query string and form body to Authentik unchanged, so repeated parameters such as `resource` (RFC 8707) arrive as sent. `/token` accepts only `application/x-www-form-urlencoded` bodies, as OAuth requires; a JSON body gets `400 invalid_request`. If the server can't listen (port in use, an address this machine doesn't have), it now exits with status 1 and says why, so systemd restarts it.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (it is git-ignored) and fill it in.

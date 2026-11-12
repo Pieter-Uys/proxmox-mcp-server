@@ -2,6 +2,7 @@ import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -203,5 +204,62 @@ test("error handlers answer 500 when an error carries an unusable status", () =>
     const error = Object.assign(new Error("odd"), { status });
     jsonRpcErrorHandler(error, { path: "/mcp" }, res, () => {});
     assert.equal(sent, 500, `status ${status}`);
+  }
+});
+
+// ─── D4: the OAuth proxy forwards parameters unchanged ──────────────────────
+// URLSearchParams(req.query) joins a repeated parameter with commas
+// (resource=a&resource=b became resource=a%2Cb), and the extended body parser
+// turned a[b]=c into a=[object Object]. RFC 8707 lets resource repeat.
+const OAUTH_QUERY = "response_type=code&client_id=c1&resource=https%3A%2F%2Fa&resource=https%3A%2F%2Fb&a%5Bb%5D=c&state=s";
+
+test("D4: /authorize forwards the query string exactly as sent", async () => {
+  await withServer({}, async ({ base }) => {
+    const response = await fetch(`${base}/authorize?${OAUTH_QUERY}`, { redirect: "manual" });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), `https://auth.test/application/o/authorize/?${OAUTH_QUERY}`);
+  });
+});
+
+test("D4: /token forwards the form body exactly as sent", async () => {
+  const received = [];
+  const authentik = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      received.push({ path: req.url, type: req.headers["content-type"], body });
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ access_token: "t", token_type: "Bearer" }));
+    });
+  });
+  await new Promise((resolve) => authentik.listen(0, "127.0.0.1", resolve));
+  const authentikUrl = `http://127.0.0.1:${authentik.address().port}`;
+  try {
+    await withServer({ AUTHENTIK_URL: authentikUrl }, async ({ base }) => {
+      const form = "grant_type=authorization_code&code=x&resource=https%3A%2F%2Fa&resource=https%3A%2F%2Fb&a%5Bb%5D=c";
+      const response = await fetch(`${base}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form,
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { access_token: "t", token_type: "Bearer" });
+      assert.deepEqual(received, [
+        { path: "/application/o/token/", type: "application/x-www-form-urlencoded", body: form },
+      ]);
+
+      // OAuth token requests are form-encoded (RFC 6749 section 4.1.3);
+      // anything else is refused here rather than re-encoded.
+      const asJson = await fetch(`${base}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grant_type: "authorization_code" }),
+      });
+      assert.equal(asJson.status, 400);
+      assert.equal((await asJson.json()).error, "invalid_request");
+      assert.equal(received.length, 1, "nothing else reached Authentik");
+    });
+  } finally {
+    authentik.close();
   }
 });
