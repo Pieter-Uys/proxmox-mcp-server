@@ -224,3 +224,16 @@ test("run_community_script is gone", async () => {
   });
   assert.equal(reply.error.code, -32602);
 });
+
+// ─── Second audit R11: tools/call notifications don't run ───────────────────
+test("a tools/call without an id is not run, gets no reply, and is audited", async () => {
+  fs.rmSync(SECURITY.auditLog, { force: true });
+  const reply = await handleJsonRpc({
+    jsonrpc: "2.0",
+    method: "tools/call",
+    params: { name: "proxmox_api", arguments: { method: "GET", path: "/../../etc" } },
+  });
+  assert.equal(reply, null);
+  const outcomes = fs.readFileSync(SECURITY.auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line).outcome);
+  assert.deepEqual(outcomes, ["refused_notification"], "never started");
+});

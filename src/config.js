@@ -92,6 +92,56 @@ function parseOptionalList(name) {
   return entries;
 }
 
+// Reads a TCP port, 1 to 65535.
+function parsePort(name, fallback) {
+  const port = parseNonNegativeInt(name, fallback);
+  if (port < 1 || port > 65535) {
+    console.error(`${name} must be a port from 1 to 65535, got "${port}".`);
+    process.exit(1);
+  }
+  return port;
+}
+
+// Reads a base URL that keys or tokens travel over. It must be https, except
+// on loopback for local testing, and carry no query or fragment. Trailing
+// slashes are stripped: Authentik's issuer is built from this URL, and a
+// stray slash would make every login fail as "wrong issuer".
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+function parseServiceUrl(name) {
+  const raw = process.env[name];
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    console.error(`${name} must be a full URL such as https://example.com, got "${raw}".`);
+    process.exit(1);
+  }
+  const allowed = url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname));
+  if (!allowed || url.search || url.hash) {
+    console.error(`${name} must be an https:// URL (http:// only for localhost) with no query or fragment, got "${raw}".`);
+    process.exit(1);
+  }
+  return `${url.origin}${stripTrailingSlashes(url.pathname)}`;
+}
+
+// Reads ALLOWED_USERS. Each entry is typed (user:, email:, sub:) and matches
+// only that claim; an untyped entry matches the username only. Matching an
+// entry against any claim let someone who set their email to a listed
+// username get in. An unknown type is a typo, so it refuses to start.
+const USER_ENTRY_TYPES = new Set(["user", "email", "sub"]);
+function parseAllowedUsers(name) {
+  const entries = parseOptionalList(name);
+  if (!entries) return null;
+  const unknown = entries.find((entry) => entry.includes(":") && !USER_ENTRY_TYPES.has(entry.split(":")[0]));
+  if (unknown) {
+    console.error(`${name} entry "${unknown}" has an unknown type. Use user:, email: or sub:, or no prefix for a username.`);
+    process.exit(1);
+  }
+  if (entries.some((entry) => !entry.includes(":")))
+    console.warn(`${name} has untyped entries, which match the username only. Prefix them with user:, email: or sub: to be explicit.`);
+  return entries;
+}
+
 // Reads a whole number of seconds, at least 1.
 function parsePositiveSeconds(name, fallback) {
   const seconds = parseNonNegativeInt(name, fallback);
@@ -121,7 +171,7 @@ function parseCidrListSetting(name, fallback) {
 export const CONFIG = {
   proxmox: {
     host: process.env.PROXMOX_HOST,
-    port: process.env.PROXMOX_PORT || "8006",
+    port: String(parsePort("PROXMOX_PORT", "8006")),
     tokenId: process.env.PROXMOX_TOKEN_ID,
     tokenSecret: process.env.PROXMOX_TOKEN_SECRET,
     node: process.env.PROXMOX_NODE || "proxmox",
@@ -133,7 +183,7 @@ export const CONFIG = {
   },
   ssh: {
     host: process.env.PROXMOX_SSH_HOST,
-    port: Number.parseInt(process.env.PROXMOX_SSH_PORT || "22", 10),
+    port: parsePort("PROXMOX_SSH_PORT", "22"),
     username: process.env.PROXMOX_SSH_USER || "root",
     privateKey: process.env.PROXMOX_SSH_KEY
       ? fs.readFileSync(process.env.PROXMOX_SSH_KEY)
@@ -143,11 +193,11 @@ export const CONFIG = {
     hostKey: parseOptionalHostKey("PROXMOX_SSH_HOST_KEY"),
   },
   server: {
-    port: Number.parseInt(process.env.MCP_PORT || "3000", 10),
-    baseUrl: process.env.MCP_BASE_URL,
+    port: parsePort("MCP_PORT", "3000"),
+    baseUrl: parseServiceUrl("MCP_BASE_URL"),
   },
   authentik: {
-    url: process.env.AUTHENTIK_URL,
+    url: parseServiceUrl("AUTHENTIK_URL"),
     slug: process.env.AUTHENTIK_APP_SLUG || "proxmox-mcp",
     // The OAuth client id. When set, a JWT is accepted only if its `aud` claim
     // names it, so a token Authentik issued for another application on the
@@ -178,9 +228,13 @@ export const SECURITY = {
   // Reverse proxy hops in front of the server (e.g. 1 for a Cloudflare tunnel),
   // so the limiter sees real client IPs. 0 means no proxy.
   trustProxyHops: parseNonNegativeInt("TRUST_PROXY_HOPS", "0"),
+  // Believe Cloudflare's cf-connecting-ip for the audit log's client IP. Only
+  // with TRUST_PROXY_HOPS > 0, and only when that proxy is Cloudflare (or
+  // strips the header): behind nginx, Traefik or Caddy a client could set it.
+  trustCloudflareHeader: (process.env.TRUST_CLOUDFLARE_HEADER || "false").toLowerCase() === "true",
   // Usernames, emails or subject ids allowed to use the server, or null for
   // anyone Authentik signs in. A second check after Authentik's own binding.
-  allowedUsers: parseOptionalList("ALLOWED_USERS"),
+  allowedUsers: parseAllowedUsers("ALLOWED_USERS"),
   // Authentik group names whose members may use the server. Either list
   // matching is enough; with neither set, anyone Authentik signs in may.
   allowedGroups: parseOptionalList("ALLOWED_GROUPS"),
@@ -203,6 +257,7 @@ const ALLOWED_MODES = {
   SHELL_MODE: [SECURITY.shellMode, ["full", "readonly", "off"]],
   TOOL_MODE: [SECURITY.toolMode, ["full", "readonly"]],
   AUDIT_REQUIRED: [SECURITY.auditRequired, ["true", "false"]],
+  TRUST_CLOUDFLARE_HEADER: [(process.env.TRUST_CLOUDFLARE_HEADER || "false").toLowerCase(), ["true", "false"]],
   VM_SSH_PASSWORD_AUTH: [SECURITY.vmSshPasswordAuth, ["off", "on"]],
 };
 for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {

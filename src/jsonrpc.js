@@ -18,6 +18,12 @@ export async function handleJsonRpc(rpcRequest, caller = {}) {
   // one, even with an error.
   const isNotification = !Object.hasOwn(rpcRequest, "id");
   console.log("RPC:", forLog(method, 60), describeRpcTarget(rpcRequest), isNotification ? "(notification)" : `id=${forLog(id, 40)}`);
+  // A tool call sent as a notification would run with nobody to receive the
+  // result. Nothing legitimate does that, so it is recorded and not run.
+  if (isNotification && method === "tools/call") {
+    audit({ event: "tool_call", user: caller.user, ip: caller.ip, tool: params?.name, outcome: "refused_notification" });
+    return null;
+  }
   if (!Object.hasOwn(METHODS, method))
     return isNotification
       ? null
