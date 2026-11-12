@@ -209,7 +209,7 @@ The server will not start unless the variables marked **required** are set, so a
 npm test
 ```
 
-Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access (a few tests use servers on `127.0.0.1`). CI runs the suite on Node 22, 24 and 26, enforces a coverage floor, and runs `npm audit` on every pull request and push to `main`. Actions are pinned to commit SHAs, and the Docker image follows a Node LTS line (`node:26-alpine`); Dependabot proposes the next even-numbered major.
+Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access (a few tests use servers on `127.0.0.1`). CI runs the suite on Node 22, 24 and 26, enforces a coverage floor, and runs `npm audit` on every pull request and push to `main`. Actions are pinned to commit SHAs, and the Docker image follows a Node LTS line (`node:26-alpine`), so builds are not reproducible (see `SECURITY.md`); Dependabot proposes the next even-numbered major.
 
 The suite covers:
 
