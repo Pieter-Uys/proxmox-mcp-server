@@ -1,0 +1,43 @@
+# Standalone server for MANUAL HTTP-surface probing.
+#
+# This is not the automated suite. The automated suite (test/security/*.mjs,
+# run by run-all.mjs and the Security workflow) imports the modules and drives
+# instrumented mock backends, which is higher yield than black-box scanning of
+# a JSON-RPC server behind bearer auth. Use this compose only to poke the HTTP
+# surface by hand: the batch refusal, the 429 rate-limit shape, CORS, and that
+# a failed listen does not report success (audit 4, D1). With AUTH_MODE=off
+# there are no 401s; test/server.test.js checks those, and the
+# WWW-Authenticate header, with auth enforced.
+#
+# It starts with auth and shell OFF so it boots without real infrastructure.
+# That means tool calls fail at the network layer: it exercises the transport,
+# not Proxmox. Never point this at a real Proxmox host or Authentik.
+#
+# AUTH_MODE=off only ever listens on loopback (src/config.js refuses anything
+# else), and loopback inside a container can't be published with `ports:`. So
+# the container shares the host's network and binds 127.0.0.1 there: reachable
+# from this machine only. Host networking needs Linux, or a Docker Desktop
+# version with host networking turned on.
+#
+#   docker compose -f test/security/docker-compose.yml up --build
+#   curl -s localhost:3000/health
+#   curl -i -X POST localhost:3000/mcp -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'   # expect the tool list (auth is off)
+#   curl -i -X POST localhost:3000/mcp -H 'content-type: application/json' -d '[1,2]'                                          # expect 400 batch refused
+
+services:
+  proxmox-mcp:
+    build:
+      context: ../..
+    network_mode: host
+    environment:
+      PROXMOX_HOST: 127.0.0.1
+      PROXMOX_TOKEN_ID: probe@pam!probe
+      PROXMOX_TOKEN_SECRET: probe
+      PROXMOX_SSH_HOST: 127.0.0.1
+      MCP_BASE_URL: http://localhost:3000
+      AUTHENTIK_URL: http://localhost:9000
+      AUTH_MODE: "off"
+      SHELL_MODE: "off"
+      ALLOW_INSECURE_AUTH: "yes"
+      MCP_BIND_ADDRESS: 127.0.0.1
+      AUDIT_LOG: /data/audit.jsonl
