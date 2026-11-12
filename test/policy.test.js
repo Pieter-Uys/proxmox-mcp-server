@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isReadonlyCommand, getPolicyBlockReason, withSafePsEnvironment } from "../src/policy.js";
+import { isReadonlyCommand, getPolicyBlockReason, withSafePsEnvironment, READONLY_COMMAND_NAMES } from "../src/policy.js";
 import { SECURITY } from "../src/config.js";
 import { TOOLS } from "../src/tools.js";
 
@@ -892,5 +892,68 @@ test("N2: a lone - is grep's pattern or stdin, never a way to hide a file", asyn
     grep - /var/log/syslog
     grep -- -x /var/log/syslog
     grep -e - /var/log/syslog
+  `);
+});
+
+// N5: every rule names the options it accepts, so a new GNU option (the next
+// --files0-from) is refused until someone looks at it.
+test("N5: every read-only command refuses an option it doesn't name", () => {
+  const prefixes = { qm: "qm list", pct: "pct list", zfs: "zfs list", zpool: "zpool status", pvesm: "pvesm status",
+    systemctl: "systemctl status", ip: "ip addr" };
+  for (const name of READONLY_COMMAND_NAMES) {
+    const base = prefixes[name] ?? name;
+    for (const option of ["--definitely-not-an-option", "-%"]) {
+      assert.equal(isReadonlyCommand(`${base} ${option} /var/log/syslog`), false, `should refuse: ${base} ${option}`);
+    }
+  }
+});
+
+test("N5: commands that never take a file refuse operands; free never loops", () => {
+  assertRefused(`
+    free -s 1
+    free -c 100
+    free --seconds=1
+    free --count=100
+    uptime /var/log
+    uname foo
+    whoami root
+    pveversion /etc
+  `);
+  assertAllowed(`
+    ls
+    ls -la /var/log
+    ls -lhS --sort=size /var/lib/vz
+    ls -1 /etc/pve/qemu-server
+    ls --color=never -l /var/log
+    stat /var/log/syslog
+    stat -c %s /var/log/syslog
+    stat --format=%y /var/log/syslog
+    df
+    df -h
+    df -hT
+    df -h /var/lib/vz
+    df -i --exclude-type=tmpfs
+    free
+    free -m
+    free -h
+    free -h --wide
+    uptime
+    uptime -p
+    lsblk
+    lsblk -f
+    lsblk -o NAME,SIZE,MOUNTPOINT
+    lsblk -d -o NAME,ROTA /dev/sda
+    uname
+    uname -a
+    uname -r
+    whoami
+    pveversion
+    pveversion -v
+    cat -n /etc/hostname
+    head -c 100 /var/log/syslog
+    head -20 /var/log/syslog
+    grep -c error /var/log/syslog
+    grep -A 3 -B 2 error /var/log/syslog
+    grep -inE err /var/log/syslog
   `);
 });

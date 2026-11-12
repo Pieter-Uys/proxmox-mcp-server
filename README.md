@@ -140,6 +140,8 @@ Behind a Cloudflare Tunnel, set `TRUST_CLOUDFLARE_HEADER=true` to keep recording
 
 Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` and `grep` run without approval only for files under `READONLY_PATHS`, and inside containers and VMs every file read asks. Add your own log directories to `READONLY_PATHS` if they come up often.
 
+**From a version before the third security audit (November 2026):** every command on the read-only list now names the options it accepts, so a rarely used option to `ls`, `df`, `lsblk` or the others needs approval instead of running, and `free -s` and `free -c` (which repeat until the timeout) always do. `wc` and `du` refuse `--files0-from` and `--exclude-from`. `cat`, `head`, `tail` and `grep` with no file, or with `-`, read standard input and need approval.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (it is git-ignored) and fill it in.

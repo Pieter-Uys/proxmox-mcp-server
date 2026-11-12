@@ -57,16 +57,22 @@ export function isReadonlyCommand(command, context = "host") {
   return readonlyRefusal(command, context) === null;
 }
 
+const SENSITIVE_READ = "This command reads a path that can hold secrets (keys, password hashes, cluster credentials).";
+
 // Why the command needs approval, or null if it is read-only. Checked in this
 // order so the reason describes the real risk: a command that could change
 // something is never described as a read.
 function readonlyRefusal(command, context = "host") {
   const words = plainWords(command);
-  if (words === null || !passesAllowlist(words))
-    return "This command isn't on the read-only list, so it could change the system.";
+  const notListed = "This command isn't on the read-only list, so it could change the system.";
+  if (words === null) return notListed;
   const [name, ...args] = words;
+  // grep changes nothing, and GNU grep accepts abbreviations its exact option
+  // list doesn't name (--rec), so a recursive grep is described as the read it is.
+  if (name === "grep" && isRecursiveGrep(args)) return SENSITIVE_READ;
+  if (!passesAllowlist(words)) return notListed;
   if (touchesSensitivePath(name, args))
-    return "This command reads a path that can hold secrets (keys, password hashes, cluster credentials).";
+    return SENSITIVE_READ;
   return contentReadRefusal(name, args, context);
 }
 
@@ -123,6 +129,7 @@ function contentReadRefusal(name, args, context) {
 // the rest of the line parses, so it makes the command need approval.
 const READER_OPTIONS = {
   cat: {
+    flags: "AbeEnstTuv",
     valued: "",
     fileValued: "",
     longFlags: ["--number", "--number-nonblank", "--show-all", "--show-ends", "--show-tabs", "--squeeze-blank", "--show-nonprinting"],
@@ -130,6 +137,7 @@ const READER_OPTIONS = {
     fileLongValued: [],
   },
   head: {
+    flags: "qvz",
     valued: "nc",
     fileValued: "",
     longFlags: ["--quiet", "--silent", "--verbose", "--zero-terminated"],
@@ -137,6 +145,7 @@ const READER_OPTIONS = {
     fileLongValued: [],
   },
   tail: {
+    flags: "qvz",
     valued: "nc",
     fileValued: "",
     longFlags: ["--quiet", "--silent", "--verbose", "--zero-terminated"],
@@ -144,6 +153,8 @@ const READER_OPTIONS = {
     fileLongValued: [],
   },
   grep: {
+    // r and R are listed so recursive grep reaches its own refusal message.
+    flags: "EFGPiyvwxclLoqsbHhnTZzaIrRU",
     valued: "emABCdD",
     fileValued: "f",
     longFlags: [
@@ -151,11 +162,12 @@ const READER_OPTIONS = {
       "--files-with-matches", "--files-without-match", "--only-matching", "--quiet", "--silent",
       "--no-messages", "--byte-offset", "--with-filename", "--no-filename", "--line-number", "--initial-tab",
       "--null", "--null-data", "--text", "--extended-regexp", "--fixed-strings", "--basic-regexp",
-      "--perl-regexp", "--line-buffered", "--color", "--colour",
+      "--perl-regexp", "--line-buffered", "--color", "--colour", "--recursive", "--dereference-recursive",
+      "--no-group-separator", "--binary",
     ],
     longValued: [
       "--regexp", "--max-count", "--after-context", "--before-context", "--context", "--directories",
-      "--devices", "--include", "--exclude", "--exclude-dir", "--label", "--group-separator",
+      "--devices", "--include", "--exclude", "--exclude-dir", "--label", "--group-separator", "--binary-files",
     ],
     fileLongValued: ["--file", "--exclude-from"],
   },
@@ -181,7 +193,7 @@ function fileOperands(name, args) {
 }
 
 // Reads one word into `found`. Returns how many following words it consumed
-// as a value, or null for an unknown long option.
+// as a value, or null for an unknown option.
 function readReaderOption(spec, arg, next, found) {
   if (arg.startsWith("--")) return readReaderLongOption(spec, arg, next, found);
   if (arg.startsWith("-") && arg.length > 1) return readReaderShortCluster(spec, arg, next, found);
@@ -202,13 +214,17 @@ function readReaderLongOption(spec, arg, next, found) {
 }
 
 // The first valued letter in a cluster takes the rest of the word as its value
-// (-n50), or the next word if nothing follows it (-n 50).
+// (-n50), or the next word if nothing follows it (-n 50). An unknown letter
+// returns null, like an unknown long option.
 function readReaderShortCluster(spec, arg, next, found) {
   if (/^-\d+$/.test(arg)) return 0; // head -20, tail -100
   for (let position = 1; position < arg.length; position++) {
     const letter = arg[position];
     const isFile = spec.fileValued.includes(letter);
-    if (!isFile && !spec.valued.includes(letter)) continue;
+    if (!isFile && !spec.valued.includes(letter)) {
+      if (!spec.flags.includes(letter)) return null;
+      continue;
+    }
     const attached = arg.slice(position + 1);
     noteValue(found, attached || next, { isFile, isPattern: letter === "e" });
     return attached ? 0 : 1;
@@ -394,7 +410,6 @@ function splitLongOption(arg) {
 const isLongOptionPrefix = (name, option) => name.length > 2 && option.startsWith(name);
 const isRecurseValue = (value) => typeof value === "string" && value !== "" && "recurse".startsWith(value);
 
-const anyArgs = () => true;
 const onlyArgsIn = (...allowed) => (args) => args.every((arg) => allowed.includes(arg));
 
 // ─── Exact option allowlists ────────────────────────────────────────────────
@@ -736,23 +751,89 @@ function isReadonlyPs(args) {
   return true;
 }
 
+// The rest of the read-only commands. Each names every option it accepts, so
+// a new GNU option (the next --files0-from) is refused until someone has
+// looked at it. noOperands: commands that never take a file or name.
+const noOperands = () => false;
+const LS_SPEC = {
+  flags: "aAbBcCdfFgGhHiklLmnNopqQrRsStuUvxXZ1",
+  valued: "IwT",
+  long: [
+    "--all", "--almost-all", "--author", "--escape", "--directory", "--file-type", "--full-time",
+    "--group-directories-first", "--no-group", "--human-readable", "--si", "--dereference-command-line",
+    "--dereference-command-line-symlink-to-dir", "--hide-control-chars", "--show-control-chars", "--inode",
+    "--kibibytes", "--dereference", "--numeric-uid-gid", "--literal", "--quote-name", "--recursive",
+    "--reverse", "--size", "--context", "--zero",
+  ],
+  longValued: [
+    "--block-size", "--format", "--hide", "--ignore", "--indicator-style", "--quoting-style", "--sort",
+    "--time", "--time-style", "--width", "--tabsize",
+  ],
+  longOptional: ["--color", "--classify", "--hyperlink"],
+};
+const STAT_SPEC = {
+  flags: "Lft",
+  valued: "c",
+  long: ["--dereference", "--file-system", "--terse"],
+  longValued: ["--format", "--printf", "--cached"],
+};
+const DF_SPEC = {
+  flags: "ahHiklPTv",
+  valued: "Btx",
+  long: ["--all", "--human-readable", "--si", "--inodes", "--local", "--portability", "--print-type", "--total", "--no-sync", "--sync"],
+  longValued: ["--block-size", "--type", "--exclude-type"],
+  longOptional: ["--output"],
+};
+// free: no -s/--seconds or -c/--count, which repeat until the timeout.
+const FREE_SPEC = {
+  flags: "bkmghltwvL",
+  long: [
+    "--bytes", "--kilo", "--mega", "--giga", "--tera", "--peta", "--kibi", "--mebi", "--gibi", "--tebi",
+    "--pebi", "--human", "--si", "--lohi", "--total", "--wide", "--committed", "--line",
+  ],
+  positional: noOperands,
+};
+const UPTIME_SPEC = { flags: "ps", long: ["--pretty", "--since"], positional: noOperands };
+const LSBLK_SPEC = {
+  flags: "abdDfJlmnOpPrsStz",
+  valued: "oeIxw",
+  long: [
+    "--all", "--bytes", "--nodeps", "--discard", "--fs", "--json", "--list", "--perms", "--noheadings",
+    "--pairs", "--raw", "--scsi", "--topology", "--paths", "--output-all", "--inverse", "--zoned", "--ascii",
+  ],
+  longValued: ["--output", "--exclude", "--include", "--sort", "--width"],
+};
+const UNAME_SPEC = {
+  flags: "asnrvmpio",
+  long: [
+    "--all", "--kernel-name", "--nodename", "--kernel-release", "--kernel-version", "--machine",
+    "--processor", "--hardware-platform", "--operating-system",
+  ],
+  positional: noOperands,
+};
+const PVEVERSION_SPEC = { flags: "v", long: ["--verbose"], positional: noOperands };
+
+// The content readers take their options from READER_OPTIONS, the table the
+// readable-roots check parses files with, so the two can never disagree.
+const knownReaderOptions = (name) => (args) => fileOperands(name, args) !== null;
+
 const READONLY_COMMANDS = {
-  // Readers whose options can't change anything.
-  ls: anyArgs,
-  cat: anyArgs,
-  head: anyArgs,
-  grep: anyArgs,
+  // Readers whose options can't change anything, each with an exact list.
+  ls: (args) => optionsMatch(args, LS_SPEC),
+  cat: knownReaderOptions("cat"),
+  head: knownReaderOptions("head"),
+  grep: knownReaderOptions("grep"),
   wc: (args) => optionsMatch(args, WC_SPEC),
-  stat: anyArgs,
-  df: anyArgs,
+  stat: (args) => optionsMatch(args, STAT_SPEC),
+  df: (args) => optionsMatch(args, DF_SPEC),
   du: (args) => optionsMatch(args, DU_SPEC),
-  free: anyArgs,
-  uptime: anyArgs,
+  free: (args) => optionsMatch(args, FREE_SPEC),
+  uptime: (args) => optionsMatch(args, UPTIME_SPEC),
   ps: isReadonlyPs,
-  lsblk: anyArgs,
-  uname: anyArgs,
-  whoami: anyArgs,
-  pveversion: anyArgs,
+  lsblk: (args) => optionsMatch(args, LSBLK_SPEC),
+  uname: (args) => optionsMatch(args, UNAME_SPEC),
+  whoami: (args) => args.length === 0,
+  pveversion: (args) => optionsMatch(args, PVEVERSION_SPEC),
 
   // Readers that also have state-changing forms, which are refused.
   hostname: onlyArgsIn("-I", "-i", "-f", "-s", "-d", "-A", "-a", "--fqdn", "--short"), // a name argument sets it
@@ -791,3 +872,6 @@ const READONLY_COMMANDS = {
     "is-active": SYSTEMCTL_OPTIONS,
   }),
 };
+
+// The command names the read-only check knows, for tests that walk every rule.
+export const READONLY_COMMAND_NAMES = Object.freeze(Object.keys(READONLY_COMMANDS));
