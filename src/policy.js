@@ -97,10 +97,7 @@ const SENSITIVE_PATHS = [
   "/var/lib/pve-cluster", // config.db holds everything under /etc/pve, priv included
   "/root/.ssh",
   "/home/*/.ssh",
-  "/proc/*/environ", // another process's environment, which often carries secrets
-  "/proc/*/root", // a view of another root filesystem, which would bypass the rest
-  "/proc/*/cwd",
-  "/proc/kcore",
+  "/proc/kcore", // physical memory (per-process files: see isSensitiveProcPath)
 ].map((pathText) => pathText.split("/").filter(Boolean));
 
 // File or directory names that hold secrets wherever they are.
@@ -157,8 +154,27 @@ function pathSegments(candidate) {
     .filter((segment) => segment && segment !== "..");
 }
 
+// Files under /proc/<pid> (or self, thread-self, and task/<tid>) are sensitive
+// except a few that only describe the process. The rest reach its environment,
+// memory, open files (fd, map_files) or another root filesystem (root, cwd).
+const PROC_PROCESS = /^(\d+|self|thread-self)$/;
+const PROC_READABLE_FILES = new Set([
+  "status", "stat", "statm", "cmdline", "comm", "limits", "io", "sched", "cgroup", "oom_score", "wchan",
+]);
+
+function isSensitiveProcPath(segments) {
+  return segments.some((segment, index) => {
+    if (segment !== "proc" || !PROC_PROCESS.test(segments[index + 1] ?? "")) return false;
+    let rest = segments.slice(index + 2);
+    if (rest[0] === "task" && rest.length > 1) rest = rest.slice(2); // task/<tid>/...
+    if (rest.length === 0) return false; // the directory itself
+    return !(rest.length === 1 && PROC_READABLE_FILES.has(rest[0]));
+  });
+}
+
 function isSensitivePath(candidate) {
   const segments = pathSegments(candidate);
+  if (isSensitiveProcPath(segments)) return true;
   return segments.some(
     (segment, index) =>
       SENSITIVE_NAMES.some((pattern) => pattern.test(segment)) ||
@@ -231,24 +247,42 @@ const onlyArgsIn = (...allowed) => (args) => args.every((arg) => allowed.include
 //   long         long options that take no value (--no-pager)
 //   longValued   long options that take a value (--unit=x or --unit x)
 //   longOptional long options with an optional attached value (--boot, --boot=-1)
+//   optionalValued  { "-n": pattern } options whose value is optional in the real
+//                program: the next word is taken only if it matches the pattern,
+//                as the program does, and is otherwise checked as an option
+//   valuePatterns   { "--since": pattern } options whose value may start with -
 //   numeric      also accept -NUMBER words (tail -100, journalctl -b -1)
 //   positional   check for each word that is not an option or a value
 function optionsMatch(args, spec) {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
+    const next = args[index + 1];
     if (arg.startsWith("--")) {
       const [name, attachedValue] = splitLongOption(arg);
       if (spec.long?.includes(name) && attachedValue === undefined) continue;
       if (spec.longOptional?.includes(name)) continue;
+      if (spec.optionalValued && Object.hasOwn(spec.optionalValued, name)) {
+        if (attachedValue === undefined && spec.optionalValued[name].test(next ?? "")) index++;
+        continue;
+      }
       if (!spec.longValued?.includes(name)) return false;
-      if (attachedValue === undefined && ++index >= args.length) return false;
+      if (attachedValue !== undefined) continue;
+      if (!isAcceptableValue(spec, name, next)) return false;
+      index++;
       continue;
     }
     if (arg.startsWith("-") && arg.length > 1) {
       if (spec.numeric && /^-\d+$/.test(arg)) continue;
-      const consumesNext = shortClusterTakesNextWord(arg, spec);
-      if (consumesNext === null) return false;
-      if (consumesNext && ++index >= args.length) return false;
+      const cluster = parseShortCluster(arg, spec);
+      if (cluster === null) return false;
+      if (cluster.optional) {
+        if (spec.optionalValued[cluster.option].test(next ?? "")) index++;
+        continue;
+      }
+      if (cluster.takesNext) {
+        if (!isAcceptableValue(spec, cluster.option, next)) return false;
+        index++;
+      }
       continue;
     }
     if (spec.positional && !spec.positional(arg)) return false;
@@ -256,15 +290,31 @@ function optionsMatch(args, spec) {
   return true;
 }
 
-// For a cluster like -tlnp or -n50: null if a letter isn't allowed, true if the
-// cluster ends in a valued letter whose value is the next word, otherwise false.
-function shortClusterTakesNextWord(arg, spec) {
+// A value taken from the next word. It must exist, and must not start with -
+// unless the spec allows that for this option (valuePatterns): a program
+// whose option argument is optional parses such a word as an option of its
+// own, so skipping it here could hide one (journalctl -n --rotate).
+function isAcceptableValue(spec, option, value) {
+  if (value === undefined) return false;
+  if (!value.startsWith("-")) return true;
+  return Boolean(spec.valuePatterns?.[option]?.test(value));
+}
+
+// For a cluster like -tlnp or -n50: null if a letter isn't allowed. Otherwise
+// the option the cluster ends in, whether it takes the next word as its value
+// (takesNext), and whether that value is optional (optional). A valued letter
+// with more letters after it has its value attached (-n50) and takes nothing.
+function parseShortCluster(arg, spec) {
   for (let position = 1; position < arg.length; position++) {
     const letter = arg[position];
-    if (spec.valued?.includes(letter)) return position === arg.length - 1;
+    const option = `-${letter}`;
+    const isLast = position === arg.length - 1;
+    if (spec.valued?.includes(letter)) return { option, takesNext: isLast, optional: false };
+    if (spec.optionalValued && Object.hasOwn(spec.optionalValued, option))
+      return { option, takesNext: false, optional: isLast };
     if (!spec.flags?.includes(letter)) return null;
   }
-  return false;
+  return { option: null, takesNext: false, optional: false };
 }
 
 // For tools whose first word is a subcommand: the subcommand must be listed,
@@ -292,19 +342,26 @@ const SS_SPEC = {
 // journalctl: no maintenance (--rotate, --vacuum-*, --flush, --sync,
 // --setup-keys, ...) and no -f/--follow, which would hold the SSH session open
 // until the timeout. -D and --file are left out: they read arbitrary paths.
+const JOURNAL_LINES = /^(\+?\d+|all)$/;
+const RELATIVE_TIME = /^-\d+[a-z]*$/;
 const JOURNALCTL_SPEC = {
   flags: "krxeaqlbmN",
-  valued: "unpSUotgFc",
+  valued: "upSUotgFc",
   long: [
     "--no-pager", "--reverse", "--dmesg", "--all", "--quiet", "--full", "--no-full", "--utc",
     "--no-hostname", "--list-boots", "--disk-usage", "--system", "--merge", "--catalog",
     "--pager-end", "--fields",
   ],
   longValued: [
-    "--unit", "--lines", "--priority", "--since", "--until", "--output", "--identifier",
+    "--unit", "--priority", "--since", "--until", "--output", "--identifier",
     "--grep", "--field", "--cursor", "--after-cursor", "--facility",
   ],
   longOptional: ["--boot"],
+  // -n/--lines takes the next word only if it is [+]N or "all" (systemd's
+  // parse_lines, graceful); otherwise the word is parsed as an option.
+  optionalValued: { "-n": JOURNAL_LINES, "--lines": JOURNAL_LINES },
+  // Relative times such as -1h are values, not options.
+  valuePatterns: { "-S": RELATIVE_TIME, "--since": RELATIVE_TIME, "-U": RELATIVE_TIME, "--until": RELATIVE_TIME },
   numeric: true,
 };
 
@@ -418,24 +475,80 @@ function isReadonlySmartctl(args) {
 }
 
 // ─── ps ─────────────────────────────────────────────────────────────────────
-// BSD-style ps options (no dash) include `e`, which prints every process's
-// environment after its command: `ps eww`, `ps auxe`. That is the same data
-// /proc/*/environ holds, so it is treated the same way.
-// Short options that take the next word as a value, alone (-o) or at the end of a cluster (-eo).
-const PS_VALUE_LETTERS = "CGUgpqstuoOk";
-const PS_LONG_VALUE_OPTIONS = /^--(pid|ppid|sid|tty|user|User|group|Group|format|sort|cols|columns|rows|width|quick-pid)$/;
+// procps reparses the whole command line in BSD mode whenever the normal parse
+// fails (parser.c, try_bsd), and in BSD mode a word containing e prints every
+// process's environment, the same data /proc/*/environ holds. A failure is
+// easy to cause (an unknown user, a bad format key, conflicting formats), and
+// then -ef, or a value such as a user name containing e, becomes that request.
+// So ps accepts only shapes that can't fail: at most one selection and one
+// format, with values from fixed sets.
+const PS_BSD_COMMANDS = new Set(["aux", "auxww", "axjf", "ax"]);
+// -e or -A (select all) and a SysV format letter, alone or combined (-ef, -ely).
+const PS_CLUSTER = /^-(?<select>[eA])?(?<format>f|F|l|ly)?$/;
+const PS_CLUSTER_WITH_FORMAT_LIST = /^-(?<select>[eA])?o$/; // -o FORMAT, -eo FORMAT
+const PS_FORMAT_KEYS = new Set([
+  "pid", "ppid", "pgid", "sid", "uid", "user", "ruser", "euser", "gid", "group", "tty", "stat",
+  "state", "ni", "pri", "psr", "nlwp", "lwp", "%cpu", "pcpu", "%mem", "pmem", "rss", "vsz", "sz",
+  "time", "etime", "etimes", "start", "lstart", "stime", "cmd", "args", "comm", "ucmd", "wchan",
+]);
+const isPsFormat = (value) => value?.split(",").every((key) => PS_FORMAT_KEYS.has(key)) ?? false;
+const isPsSort = (value) =>
+  value?.split(",").every((key) => PS_FORMAT_KEYS.has(key.replace(/^[+-]/, ""))) ?? false;
+const PS_PID_LIST = /^\d+(,\d+)*$/;
+const PS_COMMAND_LIST = /^[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*(,[A-Za-z0-9_.@:+][A-Za-z0-9_.@:+-]*)*$/;
 
-function printsProcessEnvironment(args) {
+// ps also takes its parsing personality from the environment (procps
+// global.c: PS_PERSONALITY, then CMD_ENV, and I_WANT_A_BROKEN_PS), and "bsd"
+// forces BSD parsing of every word, where -e prints environments. The grammar
+// above can't see the remote environment, and inside a guest its owner
+// controls it (/etc/environment is applied to SSH sessions), so every ps
+// command runs with those variables unset.
+const PS_SAFE_ENVIRONMENT = "env -u PS_PERSONALITY -u CMD_ENV -u I_WANT_A_BROKEN_PS";
+export function withSafePsEnvironment(command) {
+  const trimmed = command.trimStart();
+  return trimmed === "ps" || trimmed.startsWith("ps ") ? `${PS_SAFE_ENVIRONMENT} ${trimmed}` : command;
+}
+
+// What one ps word asks for: the parts of the command it claims (selection,
+// format, sort) and how many following words it consumes, or null if it isn't
+// an accepted shape.
+function readPsWord(arg, next) {
+  if (arg === "--no-headers") return { parts: [], consumes: 0 };
+  if (arg === "-p") return PS_PID_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  if (arg === "-C") return PS_COMMAND_LIST.test(next ?? "") ? { parts: ["selection"], consumes: 1 } : null;
+  const [name, attached] = splitLongOption(arg);
+  if (name === "--sort") return readPsSort(attached, next);
+  return readPsCluster(arg, next);
+}
+
+function readPsSort(attached, next) {
+  const keys = attached ?? next;
+  return isPsSort(keys) ? { parts: ["sort"], consumes: attached === undefined ? 1 : 0 } : null;
+}
+
+// -e, -A, -f, -ef, -ely and so on, or -o / -eo followed by a format list.
+function readPsCluster(arg, next) {
+  if (arg === "-") return null;
+  const cluster = PS_CLUSTER.exec(arg) ?? PS_CLUSTER_WITH_FORMAT_LIST.exec(arg);
+  if (!cluster) return null;
+  const { select, format } = cluster.groups;
+  const parts = [select && "selection", format && "format"].filter(Boolean);
+  if (!arg.endsWith("o")) return { parts, consumes: 0 };
+  return isPsFormat(next) ? { parts: [...parts, "format"], consumes: 1 } : null;
+}
+
+// Each part may be claimed once: a second selection or format could conflict,
+// and a conflict is a parse failure, which is what triggers the BSD retry.
+function isReadonlyPs(args) {
+  if (args.length === 1 && PS_BSD_COMMANDS.has(args[0])) return true;
+  const claimed = new Set();
   for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    const takesValue = /^-[A-Za-z]+$/.test(arg) && PS_VALUE_LETTERS.includes(arg.at(-1));
-    if (takesValue || PS_LONG_VALUE_OPTIONS.test(arg)) {
-      index++; // the option's value, e.g. the name in -C pveproxy
-      continue;
-    }
-    if (/^[A-Za-z]+$/.test(arg) && arg.includes("e")) return true;
+    const word = readPsWord(args[index], args[index + 1]);
+    if (!word || word.parts.some((part) => claimed.has(part))) return false;
+    for (const part of word.parts) claimed.add(part);
+    index += word.consumes;
   }
-  return false;
+  return true;
 }
 
 const READONLY_COMMANDS = {
@@ -450,7 +563,7 @@ const READONLY_COMMANDS = {
   du: anyArgs,
   free: anyArgs,
   uptime: anyArgs,
-  ps: (args) => !printsProcessEnvironment(args),
+  ps: isReadonlyPs,
   lsblk: anyArgs,
   uname: anyArgs,
   whoami: anyArgs,
