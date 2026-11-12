@@ -138,6 +138,10 @@ test("sudoers: the commands the server builds are allowed", () => {
   const built = [
     `pct exec 101 -- bash -c ${shellQuote(withSafePsEnvironment("ps aux"))}`,
     `pct exec 101 -- bash -c ${shellQuote("echo 'quoted' && df -h")}`,
+    // A short script: sudo compiles with REG_EXTENDED|REG_NOSUB and no
+    // REG_NEWLINE (lib/util/regex.c), so the rule's final . matches newlines
+    // (audit 6, L1; checked with glibc regcomp).
+    `pct exec 101 -- bash -c ${shellQuote("cd /srv/app\ngit pull\nsystemctl restart app")}`,
     TOOLS.storage_config.shellCommand({ action: "zfs_list" }),
     TOOLS.storage_config.shellCommand({ action: "zfs_create", dataset: "tank/data" }),
     TOOLS.storage_config.shellCommand({
