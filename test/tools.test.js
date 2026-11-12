@@ -409,3 +409,52 @@ test("startupSetting builds the Proxmox startup value", () => {
   assert.equal(startupSetting({ order: 3, upDelay: 30, downDelay: 10 }), "order=3,up=30,down=10");
   assert.equal(startupSetting({ order: 1, upDelay: 0, downDelay: 0 }), "order=1");
 });
+
+// ─── Second audit R4: GETs that read guest files or secrets ────────────────
+const SENSITIVE_GETS = [
+  "/nodes/pve/qemu/100/agent/file-read?file=/etc/shadow",
+  "/nodes/pve/qemu/100/agent/get-users",
+  "/nodes/pve/qemu/100/agent",
+  "/nodes/pve/qemu/100/cloudinit/dump?type=user",
+  "/nodes/pve/scan/nfs?server=10.0.0.9",
+  "/nodes/pve/scan/iscsi?portal=10.0.0.9",
+  "/nodes/pve/storage/local/file-restore/download?volume=x&filepath=/etc",
+  "/nodes/pve/storage/local/file-restore/list?volume=x&filepath=/",
+  // Encoded forms decode to the same path, as assertSafeApiPath decodes them.
+  "/nodes/pve/qemu/100/%61gent/file-read?file=/etc/shadow",
+  "/nodes/pve/qemu/100/cloudinit/%64ump",
+];
+
+test("proxmox_api: GETs that read guest files or secrets need confirm: true", () => {
+  for (const path of SENSITIVE_GETS) {
+    const reason = getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path });
+    assert.match(reason ?? "", /confirm: true/, path);
+    assert.equal(getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path, confirm: true }), null, path);
+  }
+  assert.match(
+    getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path: SENSITIVE_GETS[0] }),
+    /guest agent/,
+  );
+});
+
+test("proxmox_api: TOOL_MODE=readonly refuses the sensitive GETs", async () => {
+  await withSecurity({ toolMode: "readonly" }, () => {
+    for (const path of SENSITIVE_GETS) {
+      assert.match(getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path, confirm: true }) ?? "", /TOOL_MODE=readonly/, path);
+    }
+  });
+});
+
+test("proxmox_api: ordinary GETs still run without confirmation", () => {
+  for (const path of [
+    "/nodes/pve/qemu/100/status/current",
+    "/cluster/resources",
+    "/cluster/resources?type=vm",
+    "/nodes/pve/qemu/100/config",
+    "/nodes/pve/storage/local/content",
+    "/version",
+    "/nodes/pve/qemu/100/agentless-name", // a segment that only starts with "agent"
+  ]) {
+    assert.equal(getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path }), null, path);
+  }
+});
