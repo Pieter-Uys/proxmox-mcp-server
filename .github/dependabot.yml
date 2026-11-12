@@ -2,6 +2,11 @@
 # the Docker base image to a Node major version, and npm packages by the lockfile. Without
 # this, the pins only ever get older. Each update arrives as its own PR, so it
 # goes through CI and review like any other change.
+#
+# A major version update needs its changelog or migration guide read before
+# merging, against the code that uses the package. CI passing is not enough:
+# Express 5 changed what app.listen does on failure, and only a test that
+# starts server.js (test/server.test.js) would notice.
 version: 2
 updates:
   - package-ecosystem: github-actions

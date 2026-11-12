@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { jsonRpcErrorHandler } from "../src/routes/middleware.js";
 
 // ─── End-to-end: the real server.js as a child process ──────────────────────
 // The other test files load modules in isolation, so nothing there runs
@@ -180,4 +181,27 @@ test("server: the rate limiter answers 429 in the JSON error shape, and never li
     // ERR_ERL_* warnings rather than failing; there must be none.
     assert.doesNotMatch(output(), /ERR_ERL_/);
   });
+});
+
+// ─── D2: error handler status codes ─────────────────────────────────────────
+// Express 5's res.status() throws on a code that isn't an integer from 100 to
+// 999, so an error carrying an odd status must not reach it unchecked.
+test("error handlers answer 500 when an error carries an unusable status", () => {
+  for (const status of [1000, 99, 4.5, "teapot", -1]) {
+    let sent;
+    const res = {
+      headersSent: false,
+      status(code) {
+        if (!Number.isInteger(code) || code < 100 || code > 999) throw new RangeError(`invalid status ${code}`);
+        sent = code;
+        return this;
+      },
+      json() {
+        return this;
+      },
+    };
+    const error = Object.assign(new Error("odd"), { status });
+    jsonRpcErrorHandler(error, { path: "/mcp" }, res, () => {});
+    assert.equal(sent, 500, `status ${status}`);
+  }
 });
