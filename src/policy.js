@@ -253,6 +253,8 @@ const SENSITIVE_PATHS = [
   "/etc/gshadow-",
   "/etc/pve/priv",
   "/etc/pve/user.cfg",
+  "/etc/pve/domains.cfg", // an OpenID Connect realm's client-key
+  "/etc/pve/sdn", // ipams.cfg and dns.cfg hold IPAM and DNS API tokens
   "/etc/corosync/authkey",
   "/var/lib/pve-cluster", // config.db holds everything under /etc/pve, priv included
   "/root/.ssh",

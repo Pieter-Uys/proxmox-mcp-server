@@ -957,3 +957,43 @@ test("N5: commands that never take a file refuse operands; free never loops", ()
     grep -inE err /var/log/syslog
   `);
 });
+
+// N3: /etc/pve holds a few credentials outside priv (an OpenID realm's
+// client-key in domains.cfg, IPAM and DNS tokens under sdn). Those are on the
+// deny list, and the default readable roots name the useful, known-clean
+// files instead of all of /etc/pve.
+test("N3: /etc/pve credentials outside priv are refused, the useful files stay readable", () => {
+  assertRefused(`
+    cat /etc/pve/domains.cfg
+    cat /etc/pve/sdn/ipams.cfg
+    cat /etc/pve/sdn/dns.cfg
+    grep client-key /etc/pve/domains.cfg
+    cat /etc/pve/notifications.cfg
+    cat /etc/pve/user.cfg
+    cat /etc/pve/nodes/pve/pve-ssl.key
+  `);
+  assertAllowed(`
+    cat /etc/pve/storage.cfg
+    cat /etc/pve/datacenter.cfg
+    cat /etc/pve/corosync.conf
+    cat /etc/pve/firewall/cluster.fw
+    cat /etc/pve/qemu-server/100.conf
+    cat /etc/pve/lxc/101.conf
+    cat /etc/pve/nodes/pve/qemu-server/100.conf
+    cat /etc/pve/nodes/pve/lxc/101.conf
+    cat /etc/pve/ha/resources.cfg
+    cat /etc/pve/jobs.cfg
+    ls /etc/pve
+  `);
+  const previous = SECURITY.readonlyPaths;
+  SECURITY.readonlyPaths = ["/"];
+  try {
+    assertRefused(`
+      cat /etc/pve/domains.cfg
+      cat /etc/pve/sdn/ipams.cfg
+      ls /etc/pve/sdn
+    `);
+  } finally {
+    SECURITY.readonlyPaths = previous;
+  }
+});
