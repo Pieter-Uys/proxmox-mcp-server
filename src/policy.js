@@ -94,9 +94,13 @@ function contentReadRefusal(name, args, context) {
   const files = fileOperands(name, args);
   if (files === null)
     return `This command uses a ${name} option the read check doesn't know, so it can't tell which files it reads.`;
-  if (files.length === 0) return null; // reads stdin, which is empty over SSH
   if (context === "guest")
     return "File reads inside a container or VM need approval: secrets there can be anywhere.";
+  // A lone - (or no file at all) reads standard input, which is never useful
+  // over this transport; asking is safer than guessing what the program does
+  // with it, as `grep - FILE` showed.
+  if (files.length === 0 || files.includes("-"))
+    return `This ${name} reads standard input instead of a named file, so it needs approval.`;
   if (files.some((file) => !file.startsWith("/")))
     return "This command reads a file by relative path; use an absolute path under READONLY_PATHS, or approve the read.";
   const roots = SECURITY.readonlyPaths.map((root) => root.split("/").filter(Boolean));
@@ -107,7 +111,8 @@ function contentReadRefusal(name, args, context) {
 }
 
 // The files a content reader would open, or null if an option is unknown. Option values are skipped (head -n
-// 5), except values that are themselves files (grep -f FILE).
+// 5), except values that are themselves files (grep -f FILE). A lone - is
+// returned as itself and means standard input.
 //
 // Getting this wrong in one direction is safe (an option value counted as a
 // file only adds a prompt) and in the other is a bypass (a file swallowed as a
@@ -180,7 +185,9 @@ function fileOperands(name, args) {
 function readReaderOption(spec, arg, next, found) {
   if (arg.startsWith("--")) return readReaderLongOption(spec, arg, next, found);
   if (arg.startsWith("-") && arg.length > 1) return readReaderShortCluster(spec, arg, next, found);
-  if (arg !== "-") found.operands.push(arg);
+  // A lone - stays an operand: for grep it can be the pattern, so dropping it
+  // here would shift the pattern onto the first file (grep - FILE).
+  found.operands.push(arg);
   return 0;
 }
 

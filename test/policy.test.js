@@ -655,6 +655,7 @@ const KNOWN_BYPASSES = `
   A2-R3  cat /proc/1/mem
   A3-N1  wc --files0-from=/opt/app/config.yml
   A3-N1  du --files0-from=/var/www/html/wp-config.php
+  A3-N2  grep - /opt/app/config.yml
 `;
 
 test("every bypass reported by either audit stays refused", () => {
@@ -732,8 +733,6 @@ test("host: content readers under the readable roots stay read-only", () => {
     cat /proc/meminfo
     cat /proc/1/status
     cat /sys/class/net/eth0/address
-    cat
-    grep error
     grep --color=auto -n --ignore-case error /var/log/syslog
     grep --color error /var/log/syslog
     grep --regexp=error --count /var/log/syslog
@@ -867,5 +866,31 @@ test("N1: wc and du never take --files0-from or an exclude file", async () => {
     du -d 1 -h /var/lib
     du --apparent-size --summarize -h /var/lib/vz
     du -shc /var/lib/vz /var/log
+  `);
+});
+
+// N2: GNU grep (3.12 checked) takes a lone - as the pattern when -e/-f give
+// none, so `grep - FILE` prints every line of FILE containing a dash. A lone
+// - elsewhere means stdin, which is never useful over this transport, so a
+// content reader that reads stdin needs approval too.
+test("N2: a lone - is grep's pattern or stdin, never a way to hide a file", async () => {
+  await assertRefusedEverywhere(`
+    grep - /opt/app/config.yml
+    grep -i - /opt/app/config.yml
+    grep -- - /opt/app/config.yml
+    grep -v - /opt/app/config.yml /var/log/syslog
+    cat - /opt/app/config.yml
+    cat -
+    cat
+    grep error
+    grep -e error -
+    head -n 5 -
+    tail -
+  `);
+  assertAllowed(`
+    grep error /var/log/syslog
+    grep - /var/log/syslog
+    grep -- -x /var/log/syslog
+    grep -e - /var/log/syslog
   `);
 });
