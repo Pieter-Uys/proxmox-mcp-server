@@ -3,7 +3,7 @@
 # Dependabot needs it to know which image to track and opens a PR for each new
 # digest (.github/dependabot.yml). SonarCloud's S8431 flags this form; it is
 # accepted on purpose.
-FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
