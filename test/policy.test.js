@@ -1,7 +1,7 @@
 import "./env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isReadonlyCommand, getPolicyBlockReason, withSafePsEnvironment } from "../src/policy.js";
+import { isReadonlyCommand, getPolicyBlockReason, withSafePsEnvironment, READONLY_COMMAND_NAMES } from "../src/policy.js";
 import { SECURITY } from "../src/config.js";
 import { TOOLS } from "../src/tools.js";
 
@@ -653,6 +653,9 @@ const KNOWN_BYPASSES = `
   A2-R3  ls /proc/1/fd
   A2-R3  ls /proc/1/map_files
   A2-R3  cat /proc/1/mem
+  A3-N1  wc --files0-from=/opt/app/config.yml
+  A3-N1  du --files0-from=/var/www/html/wp-config.php
+  A3-N2  grep - /opt/app/config.yml
 `;
 
 test("every bypass reported by either audit stays refused", () => {
@@ -730,8 +733,6 @@ test("host: content readers under the readable roots stay read-only", () => {
     cat /proc/meminfo
     cat /proc/1/status
     cat /sys/class/net/eth0/address
-    cat
-    grep error
     grep --color=auto -n --ignore-case error /var/log/syslog
     grep --color error /var/log/syslog
     grep --regexp=error --count /var/log/syslog
@@ -823,5 +824,176 @@ test("ps runs with its personality variables unset", () => {
   assert.equal(withSafePsEnvironment("ps"), `${env} ps`);
   for (const command of ["psql -l", "uptime", "echo ps", "pstree"]) {
     assert.equal(withSafePsEnvironment(command), command);
+  }
+});
+
+// ─── Third audit ────────────────────────────────────────────────────────────
+// Readers are checked in host and guest context: a guest must never be more
+// permissive than the host.
+const assertRefusedEverywhere = async (text) => {
+  for (const command of lines(text)) {
+    assert.equal(isReadonlyCommand(command), false, `host should refuse: ${command}`);
+    assert.equal(isReadonlyCommand(command, "guest"), false, `guest should refuse: ${command}`);
+  }
+  await withShellMode("full", () => {
+    for (const command of lines(text)) {
+      assert.match(getPolicyBlockReason(TOOLS.lxc_shell, { vmid: 101, command }) ?? "", /confirm: true/, `lxc_shell: ${command}`);
+    }
+  });
+};
+
+// N1: --files0-from=FILE makes wc and du read FILE as a list of names, and the
+// "No such file" error prints its whole content (checked with coreutils 9.12).
+test("N1: wc and du never take --files0-from or an exclude file", async () => {
+  await assertRefusedEverywhere(`
+    wc --files0-from=/opt/app/config.yml
+    wc --files0-from /opt/app/config.yml
+    wc --files0=/opt/app/config.yml
+    wc --files=/opt/app/config.yml
+    du --files0-from=/var/www/html/wp-config.php
+    du --files0-from /var/www/html/wp-config.php
+    du --files0=/var/www/html/wp-config.php
+    du -X /opt/app/config.yml /var
+    du --exclude-from=/opt/app/config.yml /var
+    du --exclude-f=/opt/app/config.yml /var
+  `);
+  assertAllowed(`
+    wc -l /var/log/syslog
+    wc -lwc /var/log/syslog /var/log/messages
+    wc --lines /var/log/syslog
+    du -sh /var/lib/vz
+    du -h --max-depth=1 /var/lib/vz
+    du -d 1 -h /var/lib
+    du --apparent-size --summarize -h /var/lib/vz
+    du -shc /var/lib/vz /var/log
+  `);
+});
+
+// N2: GNU grep (3.12 checked) takes a lone - as the pattern when -e/-f give
+// none, so `grep - FILE` prints every line of FILE containing a dash. A lone
+// - elsewhere means stdin, which is never useful over this transport, so a
+// content reader that reads stdin needs approval too.
+test("N2: a lone - is grep's pattern or stdin, never a way to hide a file", async () => {
+  await assertRefusedEverywhere(`
+    grep - /opt/app/config.yml
+    grep -i - /opt/app/config.yml
+    grep -- - /opt/app/config.yml
+    grep -v - /opt/app/config.yml /var/log/syslog
+    cat - /opt/app/config.yml
+    cat -
+    cat
+    grep error
+    grep -e error -
+    head -n 5 -
+    tail -
+  `);
+  assertAllowed(`
+    grep error /var/log/syslog
+    grep - /var/log/syslog
+    grep -- -x /var/log/syslog
+    grep -e - /var/log/syslog
+  `);
+});
+
+// N5: every rule names the options it accepts, so a new GNU option (the next
+// --files0-from) is refused until someone looks at it.
+test("N5: every read-only command refuses an option it doesn't name", () => {
+  const prefixes = { qm: "qm list", pct: "pct list", zfs: "zfs list", zpool: "zpool status", pvesm: "pvesm status",
+    systemctl: "systemctl status", ip: "ip addr" };
+  for (const name of READONLY_COMMAND_NAMES) {
+    const base = prefixes[name] ?? name;
+    for (const option of ["--definitely-not-an-option", "-%"]) {
+      assert.equal(isReadonlyCommand(`${base} ${option} /var/log/syslog`), false, `should refuse: ${base} ${option}`);
+    }
+  }
+});
+
+test("N5: commands that never take a file refuse operands; free never loops", () => {
+  assertRefused(`
+    free -s 1
+    free -c 100
+    free --seconds=1
+    free --count=100
+    uptime /var/log
+    uname foo
+    whoami root
+    pveversion /etc
+  `);
+  assertAllowed(`
+    ls
+    ls -la /var/log
+    ls -lhS --sort=size /var/lib/vz
+    ls -1 /etc/pve/qemu-server
+    ls --color=never -l /var/log
+    stat /var/log/syslog
+    stat -c %s /var/log/syslog
+    stat --format=%y /var/log/syslog
+    df
+    df -h
+    df -hT
+    df -h /var/lib/vz
+    df -i --exclude-type=tmpfs
+    free
+    free -m
+    free -h
+    free -h --wide
+    uptime
+    uptime -p
+    lsblk
+    lsblk -f
+    lsblk -o NAME,SIZE,MOUNTPOINT
+    lsblk -d -o NAME,ROTA /dev/sda
+    uname
+    uname -a
+    uname -r
+    whoami
+    pveversion
+    pveversion -v
+    cat -n /etc/hostname
+    head -c 100 /var/log/syslog
+    head -20 /var/log/syslog
+    grep -c error /var/log/syslog
+    grep -A 3 -B 2 error /var/log/syslog
+    grep -inE err /var/log/syslog
+  `);
+});
+
+// N3: /etc/pve holds a few credentials outside priv (an OpenID realm's
+// client-key in domains.cfg, IPAM and DNS tokens under sdn). Those are on the
+// deny list, and the default readable roots name the useful, known-clean
+// files instead of all of /etc/pve.
+test("N3: /etc/pve credentials outside priv are refused, the useful files stay readable", () => {
+  assertRefused(`
+    cat /etc/pve/domains.cfg
+    cat /etc/pve/sdn/ipams.cfg
+    cat /etc/pve/sdn/dns.cfg
+    grep client-key /etc/pve/domains.cfg
+    cat /etc/pve/notifications.cfg
+    cat /etc/pve/user.cfg
+    cat /etc/pve/nodes/pve/pve-ssl.key
+  `);
+  assertAllowed(`
+    cat /etc/pve/storage.cfg
+    cat /etc/pve/datacenter.cfg
+    cat /etc/pve/corosync.conf
+    cat /etc/pve/firewall/cluster.fw
+    cat /etc/pve/qemu-server/100.conf
+    cat /etc/pve/lxc/101.conf
+    cat /etc/pve/nodes/pve/qemu-server/100.conf
+    cat /etc/pve/nodes/pve/lxc/101.conf
+    cat /etc/pve/ha/resources.cfg
+    cat /etc/pve/jobs.cfg
+    ls /etc/pve
+  `);
+  const previous = SECURITY.readonlyPaths;
+  SECURITY.readonlyPaths = ["/"];
+  try {
+    assertRefused(`
+      cat /etc/pve/domains.cfg
+      cat /etc/pve/sdn/ipams.cfg
+      ls /etc/pve/sdn
+    `);
+  } finally {
+    SECURITY.readonlyPaths = previous;
   }
 });

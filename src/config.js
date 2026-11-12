@@ -47,11 +47,24 @@ function parseOptionalHostKey(name) {
 // The default readable roots: logs, kernel and process status, and host
 // configuration that holds no credentials. /etc/pve/priv and other secret
 // paths under these are still refused by the deny list.
+// /etc/pve is listed file by file: a few files there hold credentials outside
+// priv (domains.cfg, sdn/*), and new ones may appear in later releases. Guest
+// configs are included; they can hold a cloud-init password hash, which qm
+// config shows anyway (see the README's residual risks).
 const DEFAULT_READONLY_PATHS = [
   "/var/log",
   "/sys",
   "/proc",
-  "/etc/pve",
+  "/etc/pve/storage.cfg",
+  "/etc/pve/datacenter.cfg",
+  "/etc/pve/corosync.conf",
+  "/etc/pve/jobs.cfg",
+  "/etc/pve/firewall",
+  "/etc/pve/ha",
+  "/etc/pve/qemu-server",
+  "/etc/pve/lxc",
+  "/etc/pve/nodes/*/qemu-server",
+  "/etc/pve/nodes/*/lxc",
   "/etc/network",
   "/etc/hostname",
   "/etc/hosts",

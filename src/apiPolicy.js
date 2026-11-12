@@ -21,6 +21,12 @@ const SENSITIVE_GET_RULES = [
     reason: "This GET makes the Proxmox host probe network or storage targets the caller names.",
   },
   {
+    // Behind "Download from URL": the host fetches the URL to report its size
+    // and type, so it can reach addresses only the host can (SSRF).
+    segments: ["nodes", "*", "query-url-metadata"],
+    reason: "This GET makes the Proxmox host contact the URL the caller names (it can reach addresses only the host can).",
+  },
+  {
     segments: ["nodes", "*", "storage", "*", "file-restore"],
     reason: "This GET lists or downloads files from inside a backup.",
   },

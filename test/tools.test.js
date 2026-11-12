@@ -365,6 +365,7 @@ const SENSITIVE_GETS = [
   "/nodes/pve/scan/iscsi?portal=10.0.0.9",
   "/nodes/pve/storage/local/file-restore/download?volume=x&filepath=/etc",
   "/nodes/pve/storage/local/file-restore/list?volume=x&filepath=/",
+  "/nodes/pve/query-url-metadata?url=http://169.254.169.254/latest/meta-data/",
   // Encoded forms decode to the same path, as assertSafeApiPath decodes them.
   "/nodes/pve/qemu/100/%61gent/file-read?file=/etc/shadow",
   "/nodes/pve/qemu/100/cloudinit/%64ump",
@@ -402,4 +403,15 @@ test("proxmox_api: ordinary GETs still run without confirmation", () => {
   ]) {
     assert.equal(getPolicyBlockReason(TOOLS.proxmox_api, { method: "GET", path }), null, path);
   }
+});
+
+// ─── Third audit N4 ─────────────────────────────────────────────────────────
+// query-url-metadata (used by "Download from URL") makes the host request the
+// URL the caller names, the same class as scan.
+test("N4: query-url-metadata says the host will contact the URL", () => {
+  const reason = getPolicyBlockReason(TOOLS.proxmox_api, {
+    method: "GET",
+    path: "/nodes/pve/query-url-metadata?url=http://10.0.0.1:8006/",
+  });
+  assert.match(reason ?? "", /contact the URL/);
 });
