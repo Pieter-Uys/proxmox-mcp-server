@@ -3,6 +3,7 @@ import { Client } from "ssh2";
 import { CONFIG } from "./config.js";
 import { SSH_COMMAND_TIMEOUT_MS, SSH_CONNECT_TIMEOUT_MS, SSH_MAX_OUTPUT_BYTES } from "./constants.js";
 import { withTimeout } from "./utils.js";
+import { withHostPrivilege } from "./privilege.js";
 
 // ─── SSH ────────────────────────────────────────────────────────────────────
 // Runs a command over SSH and resolves with { stdout, stderr, code, signal, truncated }.
@@ -190,6 +191,8 @@ function describeExit({ code, signal, truncated }) {
   return "none (connection closed before the command finished)";
 }
 
+// Every command for the Proxmox host goes through here, so PROXMOX_SSH_SUDO
+// applies to all of them (vm_ssh, which reaches other machines, does not).
 export async function runOnHost(command, options) {
-  return formatCommandResult(await sshExec(command, {}, options));
+  return formatCommandResult(await sshExec(withHostPrivilege(command, CONFIG.ssh.sudo), {}, options));
 }

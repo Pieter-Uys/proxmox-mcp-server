@@ -198,6 +198,9 @@ export const CONFIG = {
     host: process.env.PROXMOX_SSH_HOST,
     port: parsePort("PROXMOX_SSH_PORT", "22"),
     username: process.env.PROXMOX_SSH_USER || "root",
+    // on: connect as a dedicated user and run the Proxmox tools through
+    // sudo -n, limited by deploy/sudoers.proxmox-mcp (see src/privilege.js).
+    sudo: (process.env.PROXMOX_SSH_SUDO || "off").toLowerCase() === "on",
     privateKey: process.env.PROXMOX_SSH_KEY
       ? fs.readFileSync(process.env.PROXMOX_SSH_KEY)
       : undefined,
@@ -272,12 +275,19 @@ const ALLOWED_MODES = {
   AUDIT_REQUIRED: [SECURITY.auditRequired, ["true", "false"]],
   TRUST_CLOUDFLARE_HEADER: [(process.env.TRUST_CLOUDFLARE_HEADER || "false").toLowerCase(), ["true", "false"]],
   VM_SSH_PASSWORD_AUTH: [SECURITY.vmSshPasswordAuth, ["off", "on"]],
+  PROXMOX_SSH_SUDO: [(process.env.PROXMOX_SSH_SUDO || "off").toLowerCase(), ["off", "on"]],
 };
 for (const [name, [value, allowed]] of Object.entries(ALLOWED_MODES)) {
   if (!allowed.includes(value)) {
     console.error(`Invalid ${name}="${value}". Expected one of: ${allowed.join(", ")}.`);
     process.exit(1);
   }
+}
+
+// sudo as root changes nothing and would suggest a boundary that isn't there.
+if (CONFIG.ssh.sudo && CONFIG.ssh.username === "root") {
+  console.error("PROXMOX_SSH_SUDO=on needs a dedicated PROXMOX_SSH_USER, not root. See docs/SETUP.md.");
+  process.exit(1);
 }
 
 // ─── Listening address ──────────────────────────────────────────────────────

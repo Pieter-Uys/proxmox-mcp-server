@@ -111,7 +111,7 @@ These hold even with every setting above in place:
 - **Read-only means "does not change the host", not "safe to show the model".** Commands on the allowlist run as the SSH user, usually root, and print what they read. The sensitive-path check covers known secret locations; the SSH user's own file permissions are the real limit.
 - **Guest configs under `/etc/pve` are readable by default** (`/etc/pve/qemu-server/*.conf` and the `lxc` and `nodes/*` equivalents), and they can hold a cloud-init password hash, the same data `qm config` shows. Set `READONLY_PATHS` without those entries if that matters to you.
 - **The read-only allowlist is best effort.** It is a parser for a small set of commands, not a sandbox. Symlinks, hard links, copies of secrets in unexpected places, or an option it doesn't know about can still expose data or change state without confirmation. `qm config` and `pct config` output can include secrets a user stored there. Use `SHELL_MODE=readonly` or `off` where that matters.
-- **The shell tools are still root on the host.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS and `network_config apply` run with the SSH user's full rights, usually root. Anyone who can sign in, or any model that convinces a user to approve, can do anything root can.
+- **The shell tools are root on the host unless you set up the sudo tier.** Once a command is confirmed, `host_shell`, `lxc_shell`, ZFS and `network_config apply` run with the SSH user's full rights. As root, anyone who can sign in, or any model that convinces a user to approve, can do anything root can. With a dedicated user and `PROXMOX_SSH_SUDO=on` ([setup](docs/SETUP.md#2-give-the-server-ssh-access-to-the-host)), only the forms in `deploy/sudoers.proxmox-mcp` run as root, and that limit holds even when the read-only parser is wrong. `pct exec` is still root inside the container, which for a privileged container is close to root on the host.
 - **`vm_ssh` only verifies a VM's host key when the call includes `hostKey`.** Without it, a machine that can intercept traffic to the VM could impersonate it. Set `PROXMOX_SSH_HOST_KEY` for the Proxmox host itself.
 
 ### Protocol support
@@ -167,7 +167,8 @@ The server will not start unless the variables marked **required** are set, so a
 | --- | --- |
 | `PROXMOX_SSH_HOST` | **Required.** Host to SSH into |
 | `PROXMOX_SSH_PORT` | Usually `22` |
-| `PROXMOX_SSH_USER` | Usually `root` |
+| `PROXMOX_SSH_USER` | `root`, or a dedicated user with `PROXMOX_SSH_SUDO=on` |
+| `PROXMOX_SSH_SUDO` | `off` (default) or `on`: run `pct`, `qm`, `pvesm`, `zfs`, `zpool` and `ifreload` through `sudo -n`, limited by `deploy/sudoers.proxmox-mcp`. Needs a non-root `PROXMOX_SSH_USER` |
 | `PROXMOX_SSH_KEY` | Path to the private key. `vm_ssh` uses it too |
 | `PROXMOX_SSH_HOST_KEY` | SHA256 fingerprint of the host's SSH key, from `ssh-keyscan -p <port> <host> \| ssh-keygen -lf -`. **Required** unless `SHELL_MODE=off`. A host presenting another key is refused before authenticating. Waive with `ALLOW_UNPINNED_SSH_HOST=yes` (not recommended) |
 | `VM_SSH_ALLOWED_CIDRS` | Comma-separated ranges `vm_ssh` may connect to, e.g. `192.168.10.0/24`. Default: private ranges only (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). Narrow it to your VM subnets |

@@ -43,11 +43,32 @@ If Proxmox uses its own self-signed certificate, copy `/etc/pve/pve-root-ca.pem`
 
 ## 2. Give the server SSH access to the host
 
-The shell tools (`host_shell`, `lxc_shell`, `vm_ssh`, ZFS and `network_config apply`) run commands over SSH, as the SSH user, directly (the server does not use `sudo`). That user's own rights are the real limit on what they can do, so choose it first:
+The shell tools (`host_shell`, `lxc_shell`, `vm_ssh`, ZFS and `network_config apply`) run commands over SSH as the SSH user. That user's own rights are the real limit on what an approved command can do, so choose it first:
 
 - **No shell tools:** set `SHELL_MODE=off` and skip this step.
 - **Read-only checks only:** create a non-root user (for example `mcp`), add it to the `systemd-journal` and `adm` groups so it can read logs, and set `SHELL_MODE=readonly`. Commands like `uptime`, `df`, `journalctl` and `ss` work; `pct`, `qm`, `zfs` and anything under `/etc/pve` won't, which is the point.
-- **Full shell tools:** `pct exec`, `zfs`, `ifreload` and friends need root. Use `root` only if you want the assistant to have them, and keep `SHELL_MODE=full` so anything off the read-only list needs approval.
+- **Shell tools through sudo (recommended):** a dedicated user plus `PROXMOX_SSH_SUDO=on`. The server runs only `pct`, `qm`, `pvesm`, `zfs`, `zpool` and `ifreload` with `sudo -n`, and the sudoers file below allows only the forms the tools need: `pct exec`, the read-only forms of `pct`, `qm`, `pvesm`, `zpool` and `zfs list`, `zfs create` with a fixed set of properties, and `ifreload -a`. Everything else, including an approved `host_shell` command, runs with the user's own rights. That holds even if the server's read-only check is wrong.
+- **Full root:** set `PROXMOX_SSH_USER=root` only if you want approved commands to be able to do anything (install packages, edit any file, restart services). Keep `SHELL_MODE=full` so anything off the read-only list needs approval.
+
+To set up the sudo tier, on the Proxmox host:
+
+```
+apt install sudo                               # not installed on Proxmox VE by default
+useradd --create-home --shell /bin/bash mcp
+usermod -aG systemd-journal,adm mcp            # read logs without sudo
+install -m 440 -o root -g root deploy/sudoers.proxmox-mcp /etc/sudoers.d/proxmox-mcp
+visudo -cf /etc/sudoers.d/proxmox-mcp          # must say "parsed OK"
+sudo -l -U mcp                                  # lists exactly the allowed forms
+```
+
+The file needs the classic sudo, 1.9.10 or later, because it uses regular expressions to match whole argument strings (`sudo -V` shows the version). sudo-rs, the default on Ubuntu 25.10 and later, doesn't support them and rejects the file. If your user isn't called `mcp`, replace the name in the file. Check the binary paths it names with `command -v pct qm pvesm zfs zpool ifreload`. Then set `PROXMOX_SSH_USER=mcp` and `PROXMOX_SSH_SUDO=on`, and use `mcp` in the commands below.
+
+What changes in this tier:
+
+- **Files only root can read** (`/etc/pve`, `smartctl` on disks) are refused. Add `mcp` to the `www-data` group if you want `/etc/pve` readable; that group can't read `/etc/pve/priv`.
+- **`zfs create`** can't set `mountpoint`, `canmount`, `sharenfs`, `sharesmb`, user properties or the encryption properties, because those could mount a dataset over `/etc` or share it to a remote root. The tool says so before trying.
+- **`lxc_shell`** is still root inside the container. For a privileged container that is close to root on the host; prefer unprivileged containers.
+- **An approved `host_shell` command** that needs root (`apt`, `systemctl restart`, editing `/etc`) fails with "permission denied" or "a password is required". That is the boundary working.
 
 ```
 ssh-keygen -t ed25519 -f ./mcp_key -N ""
