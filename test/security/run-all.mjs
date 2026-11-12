@@ -16,6 +16,7 @@ const harnesses = [
   ["fuzz-pass", "generated inputs (metachars, option abbreviations, path obfuscation)"],
   ["backend-truth", "real tool calls vs instrumented mock SSH host and Proxmox API"],
   ["auth-forgery", "forged JWTs against the real verification path"],
+  ["sudoers-match", "deploy/sudoers.proxmox-mcp vs the commands the server sends under sudo"],
 ];
 
 let failed = 0;
