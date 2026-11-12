@@ -20,7 +20,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node --test \"test/*.test.js\"",
+    "test:security": "node test/security/run-all.mjs"
   },
   "dependencies": {
     "express": "^5.3.0",

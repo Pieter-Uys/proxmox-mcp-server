@@ -29,10 +29,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
       # Coverage floor, a little under the current level, so untested code
-      # can't quietly grow. Raise it as coverage improves.
+      # can't quietly grow. Raise it as coverage improves. Only test/*.test.js:
+      # with no file argument node --test also runs every file under test/,
+      # including the security harnesses (security.yml runs those).
       - name: Coverage
         if: matrix.node-version == 22
-        run: node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=75
+        run: node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=75 "test/*.test.js"
       - run: npm audit --omit=dev --audit-level=high
         if: matrix.node-version == 22
 
