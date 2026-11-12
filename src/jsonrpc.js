@@ -4,7 +4,7 @@ import { getPolicyBlockReason } from "./policy.js";
 import { rpcResult, rpcError, RPC_ERROR_CODES } from "./rpc.js";
 import { TOOL_LIST, callTool, findTool } from "./tools.js";
 import { validateArgs, checkRequiredWhen } from "./validate.js";
-import { forLog } from "./utils.js";
+import { forLog, withTimeout } from "./utils.js";
 import { SECURITY } from "./config.js";
 
 // ─── MCP JSON-RPC handler ───────────────────────────────────────────────────
@@ -66,7 +66,6 @@ const METHODS = {
 async function handleToolCall(id, params, caller) {
   const toolName = params?.name;
   const args = params?.arguments || {};
-  let toolFields = {};
   const auditToolCall = (outcomeFields) =>
     audit({
       event: "tool_call",
@@ -74,7 +73,6 @@ async function handleToolCall(id, params, caller) {
       ip: caller.ip,
       tool: toolName,
       args: redactSecrets(args),
-      ...toolFields,
       ...outcomeFields,
     });
 
@@ -84,22 +82,11 @@ async function handleToolCall(id, params, caller) {
     return rpcError(id, RPC_ERROR_CODES.INVALID_PARAMS, `Unknown tool: ${forLog(toolName, 100)}`);
   }
   const refusal = checkToolCall(toolName, args);
-  // Only for arguments that passed validation: a tool's fields can assume
-  // well-formed input (a string script name, not an object).
-  if (refusal?.outcome !== "invalid") toolFields = toolAuditFields(toolName, args);
   if (refusal) {
     auditToolCall({ outcome: refusal.outcome, reason: refusal.reason });
     return toolErrorResult(id, refusal.message);
   }
   return runTool(id, toolName, args, auditToolCall);
-}
-
-// Extra audit fields a tool adds, e.g. which script URL a community script
-// call would run. Called only after the arguments are validated.
-export function toolAuditFields(toolName, args) {
-  const tool = findTool(toolName);
-  if (!tool?.auditFields || !args || typeof args !== "object") return {};
-  return redactSecrets(tool.auditFields(args));
 }
 
 // Returns why the server won't run this call, or null if it may run.
@@ -128,7 +115,10 @@ async function runTool(id, toolName, args, auditToolCall) {
     return toolErrorResult(id, "Refused: the audit log can't be written (AUDIT_REQUIRED=true). Fix AUDIT_LOG on the server.");
   const startedAt = Date.now();
   try {
-    const result = await callTool(toolName, args);
+    const seconds = SECURITY.toolTimeoutMs / 1000;
+    const result = await withTimeout(callTool(toolName, args), SECURITY.toolTimeoutMs, {
+      message: `The tool call took longer than ${seconds}s (TOOL_TIMEOUT_SECONDS), so the server stopped waiting. What it started may still be running on the host; check its state before retrying.`,
+    });
     auditToolCall({ outcome: "ok", ms: Date.now() - startedAt });
     return rpcResult(id, result);
   } catch (error) {

@@ -7,7 +7,8 @@ import { handleJsonRpc } from "../src/jsonrpc.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { SECURITY } from "../src/config.js";
+import net from "node:net";
+import { CONFIG, SECURITY } from "../src/config.js";
 
 // These tests run tools, which write audit entries. Other test files check
 // the shared audit log's exact contents in parallel, so use a file of our own.
@@ -177,4 +178,49 @@ test("an unknown tool is a JSON-RPC Invalid params error, not a tool result", as
     const missing = await handleJsonRpc({ jsonrpc: "2.0", id: 13, method: "tools/call", params: { name } });
     assert.equal(missing.error?.code, -32602, String(name));
   }
+});
+
+// ─── Second audit R7: no tool call holds the response open too long ────────
+
+test("a tool call that runs past TOOL_TIMEOUT_SECONDS returns, saying it may still be running", async () => {
+  // A server that accepts the connection and never answers stands in for a
+  // stalled Proxmox API, so the call would otherwise wait for its own 30s deadline.
+  const sockets = new Set();
+  const stalled = net.createServer((socket) => sockets.add(socket)).listen(0, "127.0.0.1");
+  await new Promise((resolve) => stalled.once("listening", resolve));
+  const previous = { host: CONFIG.proxmox.host, port: CONFIG.proxmox.port, timeout: SECURITY.toolTimeoutMs };
+  Object.assign(CONFIG.proxmox, { host: "127.0.0.1", port: String(stalled.address().port) });
+  SECURITY.toolTimeoutMs = 300;
+  try {
+    const started = Date.now();
+    const reply = await handleJsonRpc({
+      jsonrpc: "2.0",
+      id: 14,
+      method: "tools/call",
+      params: { name: "proxmox_api", arguments: { method: "GET", path: "/version" } },
+    });
+    assert.ok(Date.now() - started < 3000, "returned at the ceiling, not the Proxmox deadline");
+    assert.equal(reply.result.isError, true);
+    assert.match(reply.result.content[0].text, /longer than 0\.3s.*may still be running/);
+  } finally {
+    Object.assign(CONFIG.proxmox, { host: previous.host, port: previous.port });
+    SECURITY.toolTimeoutMs = previous.timeout;
+    // Drop the held connection so the abandoned request fails now, not at its own deadline.
+    for (const socket of sockets) socket.destroy();
+    stalled.close();
+  }
+});
+
+test("TOOL_TIMEOUT_SECONDS defaults to 90 seconds", () => {
+  assert.equal(SECURITY.toolTimeoutMs, 90_000);
+});
+
+test("run_community_script is gone", async () => {
+  const reply = await handleJsonRpc({
+    jsonrpc: "2.0",
+    id: 15,
+    method: "tools/call",
+    params: { name: "run_community_script", arguments: { script: "pihole" } },
+  });
+  assert.equal(reply.error.code, -32602);
 });
