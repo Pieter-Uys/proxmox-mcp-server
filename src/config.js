@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { parseCidrList, ipVersion } from "./cidr.js";
+import { stripTrailingSlashes } from "./utils.js";
 import { HOST_KEY_FINGERPRINT } from "./constants.js";
 
 // ─── Required settings ─────────────────────────────────────────────────────
@@ -53,6 +54,37 @@ function parseOptionalGitRef(name) {
     process.exit(1);
   }
   return raw;
+}
+
+// The default readable roots: logs, kernel and process status, and host
+// configuration that holds no credentials. /etc/pve/priv and other secret
+// paths under these are still refused by the deny list.
+const DEFAULT_READONLY_PATHS = [
+  "/var/log",
+  "/sys",
+  "/proc",
+  "/etc/pve",
+  "/etc/network",
+  "/etc/hostname",
+  "/etc/hosts",
+  "/etc/os-release",
+  "/etc/apt/sources.list",
+  "/etc/apt/sources.list.d",
+];
+
+// Reads READONLY_PATHS: comma-separated absolute paths, normalised. A relative
+// or empty entry refuses to start rather than being ignored.
+function parseReadonlyPaths(name) {
+  const raw = process.env[name];
+  if (raw === undefined || !raw.trim()) return DEFAULT_READONLY_PATHS;
+  const entries = raw.split(",").map((entry) => entry.trim());
+  const hasDotSegment = (entry) => entry.split("/").some((segment) => segment === "." || segment === "..");
+  const invalid = entries.find((entry) => !entry.startsWith("/") || hasDotSegment(entry));
+  if (invalid !== undefined) {
+    console.error(`${name} entries must be absolute paths without . or .. segments, got "${invalid}".`);
+    process.exit(1);
+  }
+  return entries.map((entry) => stripTrailingSlashes(entry) || "/");
 }
 
 // Reads an optional comma-separated list, lower-cased, or null when unset or
@@ -155,6 +187,10 @@ export const SECURITY = {
   // Authentik group names whose members may use the server. Either list
   // matching is enough; with neither set, anyone Authentik signs in may.
   allowedGroups: parseOptionalList("ALLOWED_GROUPS"),
+  // Absolute paths whose files cat, head, tail and grep may read on the host
+  // without approval. Everything else, and every file read inside a container
+  // or VM, needs confirm: true. The deny list of secret paths applies on top.
+  readonlyPaths: parseReadonlyPaths("READONLY_PATHS"),
   // Addresses vm_ssh may connect to, as a net.BlockList. Defaults to private
   // ranges, so it can't reach the internet unless that is configured.
   vmSshAllowedCidrs: parseCidrListSetting("VM_SSH_ALLOWED_CIDRS", PRIVATE_RANGES),

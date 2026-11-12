@@ -220,21 +220,18 @@ test("ordinary reads stay read-only next to the sensitive-path check", () => {
     "ls /var/log",
     "ls /etc/pve",
     "ls /root",
-    "cat /etc/ssh/sshd_config",
     "cat /etc/pve/storage.cfg",
     "grep error /var/log/syslog",
     "grep -i error /var/log/syslog",
     "tail -n 100 /var/log/syslog",
     "stat /etc/passwd",
     "du -sh /var/lib/vz",
-    "cat /home/alice/dev/notes.txt",
     "smartctl -a /dev/sda",
     "lsblk /dev/sda",
     "ls /dev",
     "grep -d skip error /var/log/syslog",
     "grep --devices=skip error /var/log/syslog",
     "grep --regexp=error /var/log/syslog",
-    "cat /etc/environment",
     "ps aux",
     "ps -ef",
     "ps -eo user,pid,comm",
@@ -667,6 +664,155 @@ test("every bypass reported by either audit stays refused", () => {
     const [finding, ...words] = line.split(/\s+/);
     const command = words.join(" ");
     assert.equal(isReadonlyCommand(command), false, `${finding} reopened: ${command}`);
+  }
+});
+
+// ─── Second audit R5: readable roots for file contents ──────────────────────
+// On the host, cat/head/tail/grep are read-only only when every file they read
+// is under READONLY_PATHS (and not on the deny list). Inside containers and
+// VMs every file read needs approval: secrets there can be anywhere.
+test("host: content readers outside the readable roots need confirmation", async () => {
+  for (const command of lines(`
+    cat /root/.bash_history
+    cat /root/.netrc
+    cat /home/alice/.pgpass
+    cat /root/.my.cnf
+    cat /root/.git-credentials
+    cat /root/.docker/config.json
+    cat /root/.aws/credentials
+    cat /root/.kube/config
+    cat /root/.config/rclone/rclone.conf
+    cat /etc/ceph/ceph.client.admin.keyring
+    cat /etc/pve/priv/ceph/ceph.client.admin.keyring
+    cat /etc/wireguard/wg0.conf
+    cat /etc/ppp/chap-secrets
+    cat /srv/certs/server.p12
+    cat /srv/certs/server.pfx
+    cat /srv/vault.kdbx
+    cat /etc/samba/credentials
+    cat /etc/fstab
+    cat /etc/ssh/sshd_config
+    cat /home/alice/dev/notes.txt
+    cat /etc/environment
+    tail -n 5 /opt/app/app.log
+    grep password /opt/app/config.yml
+    grep -f /opt/patterns /var/log/syslog
+    grep --exclude-from=/opt/list x /var/log/syslog
+    grep --fil=/opt/patterns /var/log/syslog
+    cat var/log/syslog
+    tail syslog
+    cat /var/log/../../etc/fstab
+    grep --color x /etc/fstab
+    grep --colour x /etc/fstab
+    grep --regex=x /etc/fstab
+    grep --reg x /etc/fstab
+    grep --e=x /etc/fstab
+    cat --unknown /etc/fstab
+  `)) {
+    assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+    await withShellMode("full", () => {
+      assert.match(getPolicyBlockReason(TOOLS.host_shell, { command }) ?? "", /confirm: true/, command);
+    });
+  }
+});
+
+test("host: content readers under the readable roots stay read-only", () => {
+  for (const command of lines(`
+    cat /etc/hostname
+    cat /etc/hosts
+    cat /etc/os-release
+    cat /etc/network/interfaces
+    cat /etc/pve/storage.cfg
+    cat /etc/apt/sources.list
+    cat /etc/apt/sources.list.d/pve.list
+    tail -n 100 /var/log/syslog
+    tail -100 /var/log/syslog
+    head -n 20 /var/log/pve/tasks/index
+    grep error /var/log/syslog
+    grep -i -e error -e warn /var/log/syslog /var/log/messages
+    grep -m 5 error /var/log/pve/tasks/index
+    cat /proc/meminfo
+    cat /proc/1/status
+    cat /sys/class/net/eth0/address
+    cat
+    grep error
+    grep --color=auto -n --ignore-case error /var/log/syslog
+    grep --color error /var/log/syslog
+    grep --regexp=error --count /var/log/syslog
+    cat --number /etc/hostname
+    tail --lines=5 --verbose /var/log/syslog
+  `)) {
+    assert.equal(isReadonlyCommand(command), true, `should allow: ${command}`);
+  }
+});
+
+test("host: readable-root messages say what to do", async () => {
+  await withShellMode("full", () => {
+    assert.match(getPolicyBlockReason(TOOLS.host_shell, { command: "cat /etc/fstab" }), /READONLY_PATHS/);
+    assert.match(getPolicyBlockReason(TOOLS.host_shell, { command: "tail syslog" }), /absolute path/);
+  });
+});
+
+test("host: READONLY_PATHS replaces the readable roots", async () => {
+  const previous = SECURITY.readonlyPaths;
+  SECURITY.readonlyPaths = ["/opt/app/logs"];
+  try {
+    assert.equal(isReadonlyCommand("tail /opt/app/logs/app.log"), true);
+    assert.equal(isReadonlyCommand("tail /var/log/syslog"), false);
+    assert.equal(isReadonlyCommand("cat /opt/app/logs/.env"), false, "the deny list still applies");
+  } finally {
+    SECURITY.readonlyPaths = previous;
+  }
+});
+
+test("guests: every file read needs confirmation, other read-only commands don't", async () => {
+  await withShellMode("full", () => {
+    for (const command of ["cat /etc/hostname", "tail -n 5 /var/log/syslog", "grep error /var/log/syslog", "head /proc/meminfo"]) {
+      for (const [tool, args] of [["lxc_shell", { vmid: 101 }], ["vm_ssh", { ip: "10.0.0.5" }]]) {
+        assert.match(getPolicyBlockReason(TOOLS[tool], { ...args, command }) ?? "", /inside a container or VM.*confirm: true/, `${tool}: ${command}`);
+      }
+    }
+    for (const command of ["uptime", "df -h", "ls /etc", "ps aux"]) {
+      assert.equal(getPolicyBlockReason(TOOLS.lxc_shell, { vmid: 101, command }), null, command);
+      assert.equal(getPolicyBlockReason(TOOLS.vm_ssh, { ip: "10.0.0.5", command }), null, command);
+    }
+  });
+  await withShellMode("readonly", () => {
+    assert.match(getPolicyBlockReason(TOOLS.lxc_shell, { vmid: 101, command: "cat /etc/hostname" }), /SHELL_MODE=readonly/);
+    assert.equal(getPolicyBlockReason(TOOLS.host_shell, { command: "cat /etc/hostname" }), null);
+  });
+});
+
+test("the deny list still refuses secret files when READONLY_PATHS is widened", () => {
+  const previous = SECURITY.readonlyPaths;
+  SECURITY.readonlyPaths = ["/"];
+  try {
+    for (const command of lines(`
+      cat /root/.bash_history
+      cat /root/.zsh_history
+      cat /root/.netrc
+      cat /home/alice/.pgpass
+      cat /root/.my.cnf
+      cat /root/.git-credentials
+      cat /root/.docker/config.json
+      cat /root/.aws/credentials
+      cat /home/alice/.kube/config
+      cat /root/.config/rclone/rclone.conf
+      cat /etc/ceph/ceph.client.admin.keyring
+      cat /etc/wireguard/wg0.conf
+      cat /etc/ppp/chap-secrets
+      cat /srv/certs/server.p12
+      cat /srv/certs/server.pfx
+      cat /srv/vault.kdbx
+      cat /etc/samba/credentials
+      cat /root/.anything
+      cat /home/alice/.config/app/token
+    `)) {
+      assert.equal(isReadonlyCommand(command), false, `should refuse: ${command}`);
+    }
+    assert.equal(isReadonlyCommand("cat /opt/app/README"), true);
+  } finally {
+    SECURITY.readonlyPaths = previous;
   }
 });
 
