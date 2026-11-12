@@ -206,3 +206,32 @@ function chooseBindAddress() {
   return requested ?? "127.0.0.1";
 }
 CONFIG.server.bindAddress = chooseBindAddress();
+
+// ─── Pins that must be in force ─────────────────────────────────────────────
+// Without a pinned host key any machine that answers as the Proxmox host gets
+// every shell command, and without an audience a token Authentik issued to
+// another application is accepted. Both used to be optional, which meant an
+// upgraded deployment had neither, so each is now required unless explicitly
+// waived with an ALLOW_* setting of exactly "yes".
+function requirePinOrWaiver({ missing, waiver, message }) {
+  if (!missing || process.env[waiver] === "yes") return;
+  console.error(`${message}\nOr set ${waiver}=yes to run without it (not recommended).`);
+  process.exit(1);
+}
+
+requirePinOrWaiver({
+  missing: SECURITY.shellMode !== "off" && !CONFIG.ssh.hostKey,
+  waiver: "ALLOW_UNPINNED_SSH_HOST",
+  message:
+    "PROXMOX_SSH_HOST_KEY is not set, so the Proxmox host's SSH key would not be checked. " +
+    `Get the fingerprint with: ssh-keyscan -p ${CONFIG.ssh.port} ${CONFIG.ssh.host} | ssh-keygen -lf -  ` +
+    "and set PROXMOX_SSH_HOST_KEY to the SHA256:... value (ed25519 if present).",
+});
+
+requirePinOrWaiver({
+  missing: SECURITY.authMode !== "off" && !CONFIG.authentik.audience,
+  waiver: "ALLOW_ANY_AUDIENCE",
+  message:
+    "AUTHENTIK_AUDIENCE is not set, so tokens issued to any application on this Authentik provider would be accepted. " +
+    "Set it to the provider's Client ID (Authentik admin: Applications, Providers, your provider, Client ID).",
+});

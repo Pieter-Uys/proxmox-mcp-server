@@ -70,8 +70,13 @@ app.listen(CONFIG.server.port, CONFIG.server.bindAddress, () => {
   console.log(
     `Security: AUTH_MODE=${SECURITY.authMode} SHELL_MODE=${SECURITY.shellMode} TOOL_MODE=${SECURITY.toolMode} AUDIT_LOG=${SECURITY.auditLog} RATE_LIMIT_PER_MINUTE=${SECURITY.rateLimitPerMinute} VM_SSH_PASSWORD_AUTH=${SECURITY.vmSshPasswordAuth}`,
   );
+  // Reached only with the ALLOW_* waivers (config.js refuses to start otherwise).
   if (!CONFIG.ssh.hostKey && SECURITY.shellMode !== "off")
     console.warn(
-      "WARNING: PROXMOX_SSH_HOST_KEY is not set, so the Proxmox host's SSH key is not checked. Set it to the fingerprint from: ssh-keyscan <host> | ssh-keygen -lf -",
+      `WARNING: ALLOW_UNPINNED_SSH_HOST=yes, so the Proxmox host's SSH key is not checked. Set PROXMOX_SSH_HOST_KEY from: ssh-keyscan -p ${CONFIG.ssh.port} ${CONFIG.ssh.host} | ssh-keygen -lf -`,
+    );
+  if (!CONFIG.authentik.audience && SECURITY.authMode !== "off")
+    console.warn(
+      "WARNING: ALLOW_ANY_AUDIENCE=yes, so tokens issued to any application on this Authentik provider are accepted. Set AUTHENTIK_AUDIENCE to the provider's Client ID.",
     );
 });

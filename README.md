@@ -125,6 +125,15 @@ The transport is written by hand rather than with the MCP SDK, so following new 
 
 Revisit these when adding support for a newer revision.
 
+## Upgrading
+
+**From a version before the second security audit (November 2026):** the server now refuses to start until these are set, because each was optional before and an upgraded deployment had neither control in force:
+
+- `PROXMOX_SSH_HOST_KEY` (unless `SHELL_MODE=off`): run `ssh-keyscan -p <port> <host> | ssh-keygen -lf -` and use the `SHA256:...` value.
+- `AUTHENTIK_AUDIENCE` (unless `AUTH_MODE=off`): the provider's Client ID in Authentik.
+
+The error at startup names the missing setting and how to get it. To start without one anyway, set `ALLOW_UNPINNED_SSH_HOST=yes` or `ALLOW_ANY_AUDIENCE=yes`.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (it is git-ignored) and fill it in.
@@ -150,7 +159,7 @@ The server will not start unless the variables marked **required** are set, so a
 | `PROXMOX_SSH_PORT` | Usually `22` |
 | `PROXMOX_SSH_USER` | Usually `root` |
 | `PROXMOX_SSH_KEY` | Path to the private key. `vm_ssh` uses it too |
-| `PROXMOX_SSH_HOST_KEY` | SHA256 fingerprint of the host's SSH key, from `ssh-keyscan <host> \| ssh-keygen -lf -`. When set, a host presenting another key is refused before authenticating. Unset means the key is not checked, and the server warns at startup |
+| `PROXMOX_SSH_HOST_KEY` | SHA256 fingerprint of the host's SSH key, from `ssh-keyscan -p <port> <host> \| ssh-keygen -lf -`. **Required** unless `SHELL_MODE=off`. A host presenting another key is refused before authenticating. Waive with `ALLOW_UNPINNED_SSH_HOST=yes` (not recommended) |
 | `VM_SSH_ALLOWED_CIDRS` | Comma-separated ranges `vm_ssh` may connect to, e.g. `192.168.10.0/24`. Default: private ranges only (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). Narrow it to your VM subnets |
 | `VM_SSH_PASSWORD_AUTH` | `off` (default): `vm_ssh` refuses a `password` argument and uses `PROXMOX_SSH_KEY`, so passwords never pass through the model's context. `on` allows passwords, and only together with a `hostKey` fingerprint |
 
@@ -163,7 +172,8 @@ The server will not start unless the variables marked **required** are set, so a
 | `MCP_BASE_URL` | **Required.** Public HTTPS address of this server |
 | `AUTHENTIK_URL` | **Required.** Base URL of your Authentik instance |
 | `AUTHENTIK_APP_SLUG` | Authentik application slug, e.g. `proxmox-mcp` |
-| `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. When set, a JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Unset skips the check |
+| `AUTHENTIK_AUDIENCE` | The OAuth client ID of the Authentik provider. **Required** unless `AUTH_MODE=off`. A JWT is accepted only if its `aud` claim contains it, so tokens Authentik issued to other applications are refused. Find it under Applications, Providers, your provider, Client ID. Waive with `ALLOW_ANY_AUDIENCE=yes` (not recommended) |
+| `ALLOW_UNPINNED_SSH_HOST`, `ALLOW_ANY_AUDIENCE` | Set to `yes` to start without `PROXMOX_SSH_HOST_KEY` or `AUTHENTIK_AUDIENCE`. The server warns at startup while either is in effect |
 
 **Security**
 

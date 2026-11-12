@@ -67,10 +67,10 @@ Set `PROXMOX_SSH_KEY` to the private key's path and `PROXMOX_SSH_HOST` to the ho
 Pin the host's own key so the server can't be talked into connecting to an impostor. On a machine that already trusts the host (or on the host itself), run:
 
 ```
-ssh-keyscan your-proxmox-host | ssh-keygen -lf -
+ssh-keyscan -p 22 your-proxmox-host | ssh-keygen -lf -   # use your PROXMOX_SSH_PORT
 ```
 
-and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). Without it the server warns at startup and accepts any key.
+and set `PROXMOX_SSH_HOST_KEY` to the `SHA256:...` value for the key type the server will use (ed25519 if present). The server refuses to start without it while shell tools are enabled. `ALLOW_UNPINNED_SSH_HOST=yes` skips the check, which means any machine that answers as the host gets every shell command.
 
 If you only want API tools, set `SHELL_MODE=off`. If you want the assistant to look but never change anything, set `TOOL_MODE=readonly`: every call that would need approval is refused. `SHELL_MODE=readonly` allows only a short allowlist of read-only commands.
 
@@ -94,9 +94,9 @@ In Authentik, create an **OAuth2/OpenID Provider** and an **Application** that u
 
 Then bind the application to the users or groups allowed to use it.
 
-Two optional settings tighten this further:
+Two settings tighten this further:
 
-- `AUTHENTIK_AUDIENCE`: set it to the provider's client ID. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider.
+- `AUTHENTIK_AUDIENCE` (**required**): set it to the provider's Client ID, under Applications, Providers, your provider. The server then accepts a JWT only if it was issued for this client, rather than any token signed by the same provider. It refuses to start without it, unless `ALLOW_ANY_AUDIENCE=yes`.
 - `ALLOWED_USERS`: a comma-separated list of usernames, emails or subject IDs. It is a second check after the application binding, applied on every request. Usernames or subject IDs are the safer choice: depending on your Authentik flows, users may be able to change their own email address.
 - `ALLOWED_GROUPS`: a comma-separated list of Authentik group names. Members of any of them are allowed. The names come from the token's `groups` claim, which Authentik's default `profile` scope mapping includes. With both lists set, a match on either is enough.
 
