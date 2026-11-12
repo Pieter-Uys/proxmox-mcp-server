@@ -6,8 +6,8 @@ import { forLog } from "../utils.js";
 // by the error handler of the router that received it.
 export const parseBody = [express.json(), express.urlencoded({ extended: true })];
 
-// Express 4 doesn't catch errors from async handlers; this passes them on to
-// the router's error handler instead of leaving an unhandled rejection.
+// Passes errors from async handlers to the router's error handler. Express 5
+// does this itself; the wrapper is kept so the handlers don't depend on it.
 export function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
@@ -19,7 +19,7 @@ export function asyncRoute(handler) {
 function createErrorHandler(formatBody) {
   return (error, req, res, next) => {
     if (res.headersSent) return next(error);
-    const status = error.status || error.statusCode || 500;
+    const status = errorStatus(error);
     const isClientError = status >= 400 && status < 500;
     // A JSON parse error quotes part of the body, which can hold secrets.
     const summary = error.type === "entity.parse.failed" ? "malformed JSON body" : error.message;
@@ -27,6 +27,14 @@ function createErrorHandler(formatBody) {
     else console.error(`Unhandled error on ${forLog(req.path)}:`, error);
     res.status(status).json(formatBody(error, isClientError));
   };
+}
+
+// The HTTP status an error asks for, or 500. Express 5's res.status() throws
+// on anything but an integer from 100 to 999, and a status outside 4xx/5xx
+// would not be an error response, so only those are passed through.
+function errorStatus(error) {
+  const status = error.status ?? error.statusCode;
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
 }
 
 // JSON-RPC 2.0 errors, for MCP clients.

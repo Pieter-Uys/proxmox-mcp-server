@@ -142,6 +142,8 @@ Expect more approval prompts for file reads: on the host, `cat`, `head`, `tail` 
 
 **From a version before the third security audit (November 2026):** every command on the read-only list now names the options it accepts, so a rarely used option to `ls`, `df`, `lsblk` or the others needs approval instead of running, and `free -s` and `free -c` (which repeat until the timeout) always do. `wc` and `du` refuse `--files0-from` and `--exclude-from`. `cat`, `head`, `tail` and `grep` with no file, or with `-`, read standard input and need approval. The default `READONLY_PATHS` no longer includes all of `/etc/pve`, only the cluster and guest configs listed under Configuration, because `domains.cfg` and `sdn/` hold credentials outside `priv`; those two are now on the deny list as well. Other files there need approval to read.
 
+**From a version before the fourth audit (November 2026):** `/authorize` and `/token` forward the client's query string and form body to Authentik unchanged, so repeated parameters such as `resource` (RFC 8707) arrive as sent. `/token` accepts only `application/x-www-form-urlencoded` bodies, as OAuth requires; a JSON body gets `400 invalid_request`. If the server can't listen (port in use, an address this machine doesn't have), it now exits with status 1 and says why, so systemd restarts it.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (it is git-ignored) and fill it in.
@@ -208,7 +210,7 @@ The server will not start unless the variables marked **required** are set, so a
 npm test
 ```
 
-Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access (a few tests use servers on `127.0.0.1`). CI runs the suite on Node 22, 24 and 26, enforces a coverage floor, and runs `npm audit` on every pull request and push to `main`. Actions are pinned to commit SHAs, and the Docker image follows a Node LTS line (`node:26-alpine`); Dependabot proposes the next even-numbered major.
+Uses Node's built-in test runner, with no extra dependencies and no network or Proxmox access (a few tests use servers on `127.0.0.1`). CI runs the suite on Node 22, 24 and 26, enforces a coverage floor, and runs `npm audit` on every pull request and push to `main`. Actions are pinned to commit SHAs, and the Docker image follows a Node LTS line (`node:26-alpine`), so builds are not reproducible (see `SECURITY.md`); Dependabot proposes the next even-numbered major.
 
 The suite covers:
 
