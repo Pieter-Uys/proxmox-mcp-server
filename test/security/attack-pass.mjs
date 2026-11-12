@@ -11,7 +11,6 @@ import "../env.js";
 import assert from "node:assert/strict";
 import { getPolicyBlockReason } from "../../src/policy.js";
 import { TOOLS } from "../../src/tools.js";
-import { sensitiveGetReason } from "../../src/apiPolicy.js";
 
 const hostShell = TOOLS.host_shell;
 const lxcShell = TOOLS.lxc_shell;

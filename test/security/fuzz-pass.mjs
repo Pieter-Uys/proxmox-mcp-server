@@ -29,7 +29,7 @@ const mustGate = (command, oracle, note) => {
 // separators are included because the shell/stripping can treat them specially.
 const METACHARS = [
   ";", "|", "&", "$", "`", "\\", "<", ">", "(", ")", "{", "}",
-  "*", "?", "[", "]", "'", '"', "!", "~", "#", "\0", " ", " ",
+  "*", "?", "[", "]", "'", '"', "!", "~", "#", "\0", "\u2028", "\u2029",
   "\n", "\r", // newline/CR are not in the word-split set, so they stay in-word
   // NB: space and tab are the word-split set [ \t]; embedding them just creates
   // another operand, decided by each command's own operand rules, so they are
@@ -97,8 +97,8 @@ const SECRET_TARGETS = [
 // f(target) -> an equivalent path string.
 const OBFUSCATIONS = [
   (p) => p,
-  (p) => p.replace(/\//g, "//"),
-  (p) => p.replace(/\//g, "///"),
+  (p) => p.replaceAll("/", "//"),
+  (p) => p.replaceAll("/", "///"),
   (p) => p.replace("/", "/./"),
   (p) => p.replace(/\/([^/]+)\//, "/$1/./"),
   (p) => p.replace(/^\/([^/]+)\//, "/$1/x/../"),
@@ -126,7 +126,7 @@ const READABLE_ROOTS = [
   "/etc/os-release", "/etc/apt",
 ]; // a conservative subset; anything the policy frees that is NOT under these is worth seeing
 const OUTSIDE_PATHS = [
-  "/opt/app/config.yml", "/srv/data/secret.txt", "/tmp/x", "/usr/local/x",
+  "/opt/app/config.yml", "/srv/data/secret.txt", "/var/cache/app/x", "/usr/local/x",
   "/mnt/backup/dump.sql", "/boot/grub/grub.cfg", "/etc/fstab", "/etc/passwd",
   "/var/lib/mysql/ibdata1", "/home/alice/notes.txt", "/data/.env",
 ];
@@ -143,7 +143,10 @@ console.log(`\nFuzz pass: ${checks} generated checks across O1-O4\n`);
 if (findings.length) {
   console.log(`!!! ${findings.length} FINDING(S): generated input ran without approval`);
   const byOracle = {};
-  for (const f of findings) (byOracle[f.oracle] ??= []).push(f);
+  for (const f of findings) {
+    byOracle[f.oracle] ??= [];
+    byOracle[f.oracle].push(f);
+  }
   for (const [oracle, fs] of Object.entries(byOracle)) {
     console.log(`\n  ${oracle}: ${fs.length}`);
     for (const f of fs.slice(0, 20)) console.log(`    ${f.command}   [${f.note}]`);

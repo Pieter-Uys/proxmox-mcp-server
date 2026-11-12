@@ -34,5 +34,6 @@ for (const [name, blurb] of harnesses) {
   console.log(`\n${ok ? "PASS" : "FAIL"}  ${name}  (${blurb})\n      ${summary}`);
 }
 
-console.log(`\n${failed === 0 ? "All security harnesses passed." : `${failed} harness(es) FAILED.`}`);
+const verdict = failed === 0 ? "All security harnesses passed." : failed + " harness(es) FAILED.";
+console.log(`\n${verdict}`);
 process.exit(failed === 0 ? 0 : 1);

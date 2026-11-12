@@ -27,13 +27,21 @@ export function ensureCert() {
   const key = path.join(dir, "key.pem");
   if (!fs.existsSync(cert) || !fs.existsSync(key)) {
     fs.mkdirSync(dir, { recursive: true });
-    execFileSync("openssl", [
+    execFileSync(opensslPath(), [
       "req", "-x509", "-newkey", "rsa:2048", "-nodes",
       "-keyout", key, "-out", cert, "-days", "2",
       "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
     ], { stdio: "ignore" });
   }
   return { cert, key };
+}
+
+// openssl by absolute path rather than a PATH lookup, so a writable directory
+// early in PATH can't substitute another program.
+function opensslPath() {
+  const found = ["/usr/bin/openssl", "/usr/local/bin/openssl", "/opt/homebrew/bin/openssl"].find((p) => fs.existsSync(p));
+  if (!found) throw new Error("openssl not found in /usr/bin, /usr/local/bin or /opt/homebrew/bin");
+  return found;
 }
 
 // ─── Mock SSH host ──────────────────────────────────────────────────────────
@@ -66,7 +74,7 @@ export async function startMockSsh() {
 // ─── Mock Proxmox REST API ──────────────────────────────────────────────────
 // HTTPS (proxmox.js refuses plain HTTP). Records { method, path, body } for
 // every request, returns a canned Proxmox-shaped body. `cert`/`key` are the
-// throwaway pair under /tmp/mockca; PROXMOX_CA_CERT must point at the cert.
+// throwaway pair from ensureCert(); PROXMOX_CA_CERT must point at the cert.
 export async function startMockProxmox(certPath, keyPath) {
   const requests = [];
   const server = https.createServer(

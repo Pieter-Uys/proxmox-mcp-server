@@ -8,6 +8,8 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 
 // Config must be in place before importing auth.js.
 Object.assign(process.env, {
@@ -18,7 +20,7 @@ Object.assign(process.env, {
   MCP_BASE_URL: "https://mcp.test",
   AUTHENTIK_URL: "https://auth.test",
   AUTHENTIK_AUDIENCE: "mcp-client", // the audience check is under test
-  AUDIT_LOG: "/tmp/pmcp-auth/audit.jsonl",
+  AUDIT_LOG: path.join(os.tmpdir(), "pmcp-auth", "audit.jsonl"),
   SHELL_MODE: "off", // no SSH host key needed
   ALLOW_ANY_AUDIENCE: "yes", // ignored: audience is set, so the check runs
 });
@@ -53,8 +55,9 @@ const verify = (token) => verifyBearerToken({ headers: { authorization: `Bearer 
 const failures = [];
 async function expectResult(label, token, shouldPass) {
   const res = await verify(token);
+  const got = res.ok ? "accept" : "reject (" + res.reason + ")";
   if (res.ok !== shouldPass)
-    failures.push(`${label}: expected ${shouldPass ? "accept" : "REJECT"}, got ${res.ok ? "accept" : `reject (${res.reason})`}`);
+    failures.push(`${label}: expected ${shouldPass ? "accept" : "REJECT"}, got ${got}`);
 }
 
 // The public key in PEM, for the algorithm-confusion attack (sign HS256 with
