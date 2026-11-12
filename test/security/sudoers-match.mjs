@@ -26,9 +26,12 @@ const sudoersText = fs.readFileSync(path.join(repoRoot, "deploy/sudoers.proxmox-
 // ERE over the space-joined arguments; otherwise it is a literal arg string.
 const rules = [];
 for (const line of sudoersText.split("\n")) {
-  const m = /^Cmnd_Alias\s+(\w+)\s*=\s*(\/\S+)\s+(.+?)\s*$/.exec(line);
+  // Greedy to the end of the line, trimmed after: no lazy group next to a
+  // trailing \s*, which can backtrack.
+  const m = /^Cmnd_Alias\s+(\w+)\s*=\s*(\/\S+) (.+)$/.exec(line);
   if (!m) continue;
-  const [, name, cmdPath, argspec] = m;
+  const [, name, cmdPath] = m;
+  const argspec = m[3].trim();
   rules.push({
     name,
     command: path.basename(cmdPath),
@@ -47,8 +50,7 @@ function tokenize(commandString) {
   let current = "";
   let inQuote = false;
   let started = false;
-  for (let i = 0; i < commandString.length; i++) {
-    const ch = commandString[i];
+  for (const ch of commandString) {
     if (inQuote) {
       if (ch === "'") inQuote = false;
       else current += ch;
