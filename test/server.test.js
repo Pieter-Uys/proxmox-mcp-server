@@ -48,7 +48,9 @@ function runUntilExit(env) {
       child.kill("SIGKILL");
       reject(new Error(`server did not exit within ${STARTUP_TIMEOUT_MS}ms:\n${output()}`));
     }, STARTUP_TIMEOUT_MS);
-    child.on("exit", (code) => {
+    // "close" comes after the output streams have ended; "exit" can come
+    // before the last of stderr has been read.
+    child.on("close", (code) => {
       clearTimeout(timer);
       resolve({ code, output: output() });
     });
@@ -59,8 +61,15 @@ function runUntilExit(env) {
 async function startServer(env = {}) {
   const port = await freePort();
   const { child, output } = spawnServer({ MCP_PORT: String(port), ...env });
+  const hasExited = () => child.exitCode !== null || child.signalCode !== null;
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`server did not start:\n${output()}`)), STARTUP_TIMEOUT_MS);
+    // A server that never says "running" is killed before the test fails, so
+    // it can't start later and keep the test run alive.
+    const timer = setTimeout(() => {
+      child.removeAllListeners("exit");
+      child.once("exit", () => reject(new Error(`server did not start:\n${output()}`)));
+      child.kill("SIGKILL");
+    }, STARTUP_TIMEOUT_MS);
     const check = () => {
       if (!/Proxmox MCP running/.test(output())) return;
       clearTimeout(timer);
@@ -72,8 +81,10 @@ async function startServer(env = {}) {
       reject(new Error(`server exited with ${code}:\n${output()}`));
     });
   });
+  // Resolves at once if the server already exited (a crash during the test).
   const stop = () =>
     new Promise((resolve) => {
+      if (hasExited()) return resolve();
       child.removeAllListeners("exit");
       child.once("exit", resolve);
       child.kill("SIGTERM");
@@ -224,10 +235,11 @@ test("D4: /authorize forwards the query string exactly as sent", async () => {
 test("D4: /token forwards the form body exactly as sent", async () => {
   const received = [];
   const authentik = http.createServer((req, res) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
-      received.push({ path: req.url, type: req.headers["content-type"], body });
+      const raw = Buffer.concat(chunks);
+      received.push({ path: req.url, type: req.headers["content-type"], body: raw.toString("latin1") });
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ access_token: "t", token_type: "Bearer" }));
     });
@@ -248,6 +260,15 @@ test("D4: /token forwards the form body exactly as sent", async () => {
         { path: "/application/o/token/", type: "application/x-www-form-urlencoded", body: form },
       ]);
 
+      // Bytes that aren't valid UTF-8 arrive as sent, not as U+FFFD.
+      const bytes = Buffer.from([0x63, 0x6f, 0x64, 0x65, 0x3d, 0xff, 0xfe]); // "code=" then 0xff 0xfe
+      await fetch(`${base}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: bytes,
+      });
+      assert.equal(received.at(-1).body, bytes.toString("latin1"));
+
       // OAuth token requests are form-encoded (RFC 6749 section 4.1.3);
       // anything else is refused here rather than re-encoded.
       const asJson = await fetch(`${base}/token`, {
@@ -257,7 +278,7 @@ test("D4: /token forwards the form body exactly as sent", async () => {
       });
       assert.equal(asJson.status, 400);
       assert.equal((await asJson.json()).error, "invalid_request");
-      assert.equal(received.length, 1, "nothing else reached Authentik");
+      assert.equal(received.length, 2, "the JSON request never reached Authentik");
     });
   } finally {
     authentik.close();

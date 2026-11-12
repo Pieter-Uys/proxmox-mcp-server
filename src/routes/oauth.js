@@ -40,7 +40,7 @@ oauthRouter.post("/token", rawForm, (req, res) => {
   return proxyToAuthentik(res, "token", AUTHENTIK.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: req.body.toString("utf8"),
+    body: req.body, // the raw bytes: decoding could replace invalid UTF-8
   });
 });
 
