@@ -543,6 +543,27 @@ const TAIL_SPEC = {
   numeric: true,
 };
 
+// wc and du print counts and sizes, not contents, so they are not content
+// readers. But --files0-from=FILE (wc, du) and -X/--exclude-from=FILE (du)
+// read FILE as a list of names, and the "No such file" error then prints the
+// whole of it. Those options are left out; the rest only choose what to count.
+const WC_SPEC = {
+  flags: "cmlwL",
+  long: ["--bytes", "--chars", "--lines", "--words", "--max-line-length"],
+  longValued: ["--total"],
+};
+const DU_SPEC = {
+  flags: "abchkmsxSLPDHl0",
+  valued: "dBt",
+  long: [
+    "--all", "--apparent-size", "--bytes", "--total", "--human-readable", "--si", "--summarize",
+    "--one-file-system", "--separate-dirs", "--dereference", "--no-dereference", "--dereference-args",
+    "--count-links", "--null", "--inodes",
+  ],
+  longValued: ["--max-depth", "--block-size", "--threshold", "--exclude", "--time-style"],
+  longOptional: ["--time"],
+};
+
 // find: every predicate is named, with whether it takes a value. Anything that
 // runs, deletes or writes (-exec, -delete, -fprint, -fls, ...) is absent.
 const FIND_PREDICATES = new Map([
@@ -714,10 +735,10 @@ const READONLY_COMMANDS = {
   cat: anyArgs,
   head: anyArgs,
   grep: anyArgs,
-  wc: anyArgs,
+  wc: (args) => optionsMatch(args, WC_SPEC),
   stat: anyArgs,
   df: anyArgs,
-  du: anyArgs,
+  du: (args) => optionsMatch(args, DU_SPEC),
   free: anyArgs,
   uptime: anyArgs,
   ps: isReadonlyPs,

@@ -653,6 +653,8 @@ const KNOWN_BYPASSES = `
   A2-R3  ls /proc/1/fd
   A2-R3  ls /proc/1/map_files
   A2-R3  cat /proc/1/mem
+  A3-N1  wc --files0-from=/opt/app/config.yml
+  A3-N1  du --files0-from=/var/www/html/wp-config.php
 `;
 
 test("every bypass reported by either audit stays refused", () => {
@@ -824,4 +826,46 @@ test("ps runs with its personality variables unset", () => {
   for (const command of ["psql -l", "uptime", "echo ps", "pstree"]) {
     assert.equal(withSafePsEnvironment(command), command);
   }
+});
+
+// ─── Third audit ────────────────────────────────────────────────────────────
+// Readers are checked in host and guest context: a guest must never be more
+// permissive than the host.
+const assertRefusedEverywhere = async (text) => {
+  for (const command of lines(text)) {
+    assert.equal(isReadonlyCommand(command), false, `host should refuse: ${command}`);
+    assert.equal(isReadonlyCommand(command, "guest"), false, `guest should refuse: ${command}`);
+  }
+  await withShellMode("full", () => {
+    for (const command of lines(text)) {
+      assert.match(getPolicyBlockReason(TOOLS.lxc_shell, { vmid: 101, command }) ?? "", /confirm: true/, `lxc_shell: ${command}`);
+    }
+  });
+};
+
+// N1: --files0-from=FILE makes wc and du read FILE as a list of names, and the
+// "No such file" error prints its whole content (checked with coreutils 9.12).
+test("N1: wc and du never take --files0-from or an exclude file", async () => {
+  await assertRefusedEverywhere(`
+    wc --files0-from=/opt/app/config.yml
+    wc --files0-from /opt/app/config.yml
+    wc --files0=/opt/app/config.yml
+    wc --files=/opt/app/config.yml
+    du --files0-from=/var/www/html/wp-config.php
+    du --files0-from /var/www/html/wp-config.php
+    du --files0=/var/www/html/wp-config.php
+    du -X /opt/app/config.yml /var
+    du --exclude-from=/opt/app/config.yml /var
+    du --exclude-f=/opt/app/config.yml /var
+  `);
+  assertAllowed(`
+    wc -l /var/log/syslog
+    wc -lwc /var/log/syslog /var/log/messages
+    wc --lines /var/log/syslog
+    du -sh /var/lib/vz
+    du -h --max-depth=1 /var/lib/vz
+    du -d 1 -h /var/lib
+    du --apparent-size --summarize -h /var/lib/vz
+    du -shc /var/lib/vz /var/log
+  `);
 });
