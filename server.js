@@ -52,15 +52,29 @@ app.use((req, res) => res.status(404).json({ error: "not_found" }));
 // Each router formats its own errors; this catches anything outside them.
 app.use(fallbackErrorHandler);
 
-app.listen(CONFIG.server.port, CONFIG.server.bindAddress, () => {
-  console.log(`Proxmox MCP running on ${CONFIG.server.bindAddress}:${CONFIG.server.port}`);
+// Express 5 passes a listen error (port in use, an address this machine
+// doesn't have) to this callback instead of throwing. Ignoring it would print
+// "running" and then exit with status 0, which systemd's Restart=on-failure
+// treats as a clean stop. So a failed listen exits 1 and says why.
+app.listen(CONFIG.server.port, CONFIG.server.bindAddress, (error) => {
+  const address = `${CONFIG.server.bindAddress}:${CONFIG.server.port}`;
+  if (error) {
+    console.error(`Could not listen on ${address}: ${error.code ?? error.message}. Check MCP_PORT and MCP_BIND_ADDRESS, and that nothing else is using the port.`);
+    process.exit(1);
+  }
+  printStartupSummary(address);
+});
+
+// What the server is running with, printed once it is listening.
+function printStartupSummary(address) {
+  console.log(`Proxmox MCP running on ${address}`);
   if (SECURITY.authMode !== "enforce")
     console.warn(
       [
         "",
         "!!! WARNING: AUTH_MODE=" + SECURITY.authMode + " !!!",
         "Requests are accepted without a valid login. Anyone who can reach",
-        `${CONFIG.server.bindAddress}:${CONFIG.server.port} can run tools as root on the Proxmox host.`,
+        `${address} can run tools as root on the Proxmox host.`,
         "Use this for local testing only, and set AUTH_MODE=enforce before exposing the server.",
         "",
       ].join("\n"),
@@ -79,4 +93,4 @@ app.listen(CONFIG.server.port, CONFIG.server.bindAddress, () => {
     console.warn(
       "WARNING: ALLOW_ANY_AUDIENCE=yes, so tokens issued to any application on this Authentik provider are accepted. Set AUTHENTIK_AUDIENCE to the provider's Client ID.",
     );
-});
+}
