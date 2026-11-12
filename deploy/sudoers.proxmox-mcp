@@ -1,0 +1,45 @@
+# sudoers rules for proxmox-mcp's dedicated SSH user (PROXMOX_SSH_SUDO=on).
+#
+# Install on the Proxmox host, then check it before logging out:
+#   install -m 440 -o root -g root sudoers.proxmox-mcp /etc/sudoers.d/proxmox-mcp
+#   visudo -cf /etc/sudoers.d/proxmox-mcp
+#
+# Replace "mcp" below with your PROXMOX_SSH_USER if it differs. Needs sudo
+# 1.9.10 or later, for regular expressions in arguments (Proxmox VE 8 ships
+# 1.9.13). Check the binary paths with `command -v pct qm pvesm zfs zpool ifreload`.
+#
+# Each rule matches the whole argument string (^...$), so nothing can be
+# appended to an allowed form. Whole-command rules such as `pct *` or `zfs *`
+# would be root-equivalent (pct push and pull, pct create with a bind mount,
+# qm set --args, zfs destroy), so only these subcommand forms are listed.
+# test/privilege.test.js checks this file against what the server sends.
+#
+# In sudoers arguments , : and = must be written \, \: and \=.
+
+Defaults:mcp env_reset
+
+# lxc_shell: a command inside a container, as the container's root. For a
+# privileged container that is close to host root; prefer unprivileged ones.
+Cmnd_Alias MCP_PCT_EXEC = /usr/sbin/pct ^exec [0-9]+ -- bash -c .+$
+
+# Read-only forms, matching the server's read-only allowlist.
+Cmnd_Alias MCP_PCT_LIST = /usr/sbin/pct ^list$
+Cmnd_Alias MCP_PCT_CONFIG = /usr/sbin/pct ^config [0-9]+( --current(\=[01])?| --snapshot( |\=)[A-Za-z0-9_-]+)*$
+Cmnd_Alias MCP_PCT_STATUS = /usr/sbin/pct ^status [0-9]+( --verbose(\=[01])?)?$
+Cmnd_Alias MCP_QM_LIST = /usr/sbin/qm ^list( --full( |\=)[01])?$
+Cmnd_Alias MCP_QM_CONFIG = /usr/sbin/qm ^config [0-9]+( --current(\=[01])?| --snapshot( |\=)[A-Za-z0-9_-]+)*$
+Cmnd_Alias MCP_QM_STATUS = /usr/sbin/qm ^status [0-9]+( --verbose(\=[01])?)?$
+Cmnd_Alias MCP_PVESM_STATUS = /usr/sbin/pvesm ^status( --(storage|content|enabled|format|target)( |\=)[A-Za-z0-9_.-]+)*$
+# zpool status -c runs scripts as root, so no c in the flags.
+Cmnd_Alias MCP_ZPOOL_STATUS = /usr/sbin/zpool ^status( -[xvPLpgD]+)*( [A-Za-z0-9][A-Za-z0-9_.-]*)*$
+Cmnd_Alias MCP_ZPOOL_LIST = /usr/sbin/zpool ^list( -[HpPvgL]+| -o ?[a-z\,]+)*( [A-Za-z0-9][A-Za-z0-9_.-]*)*$
+Cmnd_Alias MCP_ZFS_LIST = /usr/sbin/zfs ^list( -[rHp]+| -[otsSd] ?[A-Za-z0-9_.\,-]+)*( [A-Za-z0-9][A-Za-z0-9_./@\:-]*)*$
+
+# storage_config zfs_create. No mountpoint, canmount, sharenfs or sharesmb:
+# with them a dataset could be mounted over /etc or shared to a remote root.
+Cmnd_Alias MCP_ZFS_CREATE = /usr/sbin/zfs ^create( -p)?( -o (atime|relatime|compression|recordsize|quota|refquota|reservation|refreservation|xattr|acltype|sync|primarycache|secondarycache|logbias|dedup|copies|checksum|dnodesize|special_small_blocks|readonly)\=[A-Za-z0-9_.-]+)* [A-Za-z0-9][A-Za-z0-9_.\:-]*(/[A-Za-z0-9][A-Za-z0-9_.\:-]*)+$
+
+# network_config apply.
+Cmnd_Alias MCP_IFRELOAD = /usr/sbin/ifreload -a
+
+mcp ALL=(root) NOPASSWD: MCP_PCT_EXEC, MCP_PCT_LIST, MCP_PCT_CONFIG, MCP_PCT_STATUS, MCP_QM_LIST, MCP_QM_CONFIG, MCP_QM_STATUS, MCP_PVESM_STATUS, MCP_ZPOOL_STATUS, MCP_ZPOOL_LIST, MCP_ZFS_LIST, MCP_ZFS_CREATE, MCP_IFRELOAD

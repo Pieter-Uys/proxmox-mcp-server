@@ -4,6 +4,7 @@ import { ipVersion, cidrListIncludes } from "./cidr.js";
 import { proxmoxRequest } from "./proxmox.js";
 import { sshExec, runOnHost, formatCommandResult, shellQuote } from "./ssh.js";
 import { shellConfirmationReason, shellConfirmationReasonFor, withSafePsEnvironment } from "./policy.js";
+import { sudoZfsPropertiesRefusal } from "./privilege.js";
 import { sensitiveGetReason } from "./apiPolicy.js";
 import { pick } from "./utils.js";
 
@@ -48,7 +49,9 @@ function zfsPropertiesRefusal(args) {
     if (typeof value !== "string" || !ZFS_PROPERTY_VALUE.test(value))
       return `ZFS property ${name} needs a plain string value (letters, digits and _ . : / @ + = , -).`;
   }
-  return null;
+  // Under sudo the sudoers file allows fewer properties; say so here rather
+  // than let sudo -n fail with "a password is required".
+  return CONFIG.ssh.sudo ? sudoZfsPropertiesRefusal(args.properties) : null;
 }
 
 // Why vm_ssh won't connect, or null if it may. Without these limits vm_ssh
