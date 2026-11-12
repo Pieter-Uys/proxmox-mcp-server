@@ -1,13 +1,9 @@
-# Pinned by digest so a rebuild can't silently pick up a different image. The
-# tag is kept, although Docker ignores it when a digest is given, because
-# Dependabot needs it to know which image to track and opens a PR for each new
-# digest (.github/dependabot.yml). SonarCloud's S8431 flags this form; it is
-# accepted on purpose.
-#
-# Even-numbered Node releases only: odd ones (23, 25) are never LTS and reach
-# end of life within months. Dependabot skips major versions (see
-# dependabot.yml), so moving to the next LTS is a deliberate change here.
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+# A Node LTS line by tag. Rebuilds pick up that line's patch releases, and
+# Dependabot (.github/dependabot.yml) proposes the next major version, skipping
+# the odd-numbered ones, which are never LTS. There is no digest pin:
+# SonarCloud's S8431 refuses tag and digest together, and a pin by digest only
+# would leave Dependabot unable to tell which image to track.
+FROM node:26-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts

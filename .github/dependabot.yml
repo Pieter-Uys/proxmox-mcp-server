@@ -1,5 +1,5 @@
 # Keeps the pinned versions moving: GitHub Actions are pinned to commit SHAs,
-# the Docker base image to a digest, and npm packages by the lockfile. Without
+# the Docker base image to a Node major version, and npm packages by the lockfile. Without
 # this, the pins only ever get older. Each update arrives as its own PR, so it
 # goes through CI and review like any other change.
 version: 2
@@ -16,11 +16,10 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     ignore:
-      # Only digest and patch updates within the current Node line. A major
-      # bump would offer odd, non-LTS releases (25) as readily as LTS ones,
-      # so moving to the next LTS is done by hand (see the Dockerfile).
+      # Odd-numbered Node releases are never LTS and reach end of life within
+      # months, so only the even (LTS) majors are proposed.
       - dependency-name: node
-        update-types: [version-update:semver-major]
+        versions: ["27.x", "29.x", "31.x", "33.x"]
 
   - package-ecosystem: npm
     directory: /
